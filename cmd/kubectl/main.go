@@ -2,20 +2,22 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 
 	"github.com/abstractionsinc/commandment/cli"
-	kubectlcommandment "github.com/abstractionsinc/kubectl-commandment"
 )
 
 func main() {
-	app, err := kubectlcommandment.Application()
-	if err != nil {
-		_ = cli.WriteError(os.Stderr, err)
-		os.Exit(cli.ExitCode(err))
+	plugins := discoverPluginCatalog()
+	app, err := cli.Compile(applicationDefinition(plugins))
+	if err == nil {
+		err = app.RunFromProcess(context.Background())
 	}
-	if err := app.RunFromProcess(context.Background()); err != nil {
-		_ = cli.WriteError(os.Stderr, err)
+	if err != nil {
+		if !errors.Is(err, errSilentExit) {
+			_ = cli.WriteError(os.Stderr, err)
+		}
 		os.Exit(cli.ExitCode(err))
 	}
 }

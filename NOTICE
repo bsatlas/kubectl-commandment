@@ -1,0 +1,15 @@
+kubectl-commandment is a frontend migration of Kubernetes kubectl and contains
+source code, command metadata, help text, and behavior adapted from Kubernetes.
+
+Kubernetes source baseline:
+  3930cfbbb185e71ecb7b993a5582de6f775bc1f0
+
+Copyright The Kubernetes Authors.
+Licensed under the Apache License, Version 2.0.
+
+Files that substantially copy or adapt an upstream Kubernetes implementation
+retain the applicable Kubernetes source notice where practical. The repository
+LICENSE contains the Apache License, Version 2.0.
+
+Commandment is an independent Apache-2.0 dependency. No Kubernetes or
+Commandment trademark endorsement is implied by this reference migration.
