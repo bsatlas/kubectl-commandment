@@ -16,8 +16,7 @@ func runEvents(_ context.Context, cfg *eventsConfig) error {
 	}
 	flags.FilterTypes = append([]string(nil), cfg.Types...)
 	flags.ChunkSize = cfg.ChunkSize
-	configurePrintFlags(flags.PrintFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
-	flags.PrintFlags.OutputFlagSpecified = func() bool { return explicitFlagValue(cfg.OutputState) }
+	configurePrintFlagsWithOutputState(flags.PrintFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields, cfg.OutputState)
 
 	options, err := flags.ToOptions()
 	if err != nil {

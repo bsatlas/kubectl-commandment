@@ -34,21 +34,14 @@ const (
 	resourceDiscoveryReadable
 )
 
-func resourceArgumentCompleter[C any](
-	inputs resourceCompletionInputs[C],
-	allowedTypes []string,
-	repetition resourceArgumentRepetition,
-) cli.ValueCompleter[C] {
+func resourceArgumentCompleter[C any](inputs resourceCompletionInputs[C], allowedTypes []string, repetition resourceArgumentRepetition) cli.ValueCompleter[C] {
 	return func(ctx context.Context, cfg *C, request cli.ValueCompletionRequest) (cli.CompletionContribution, error) {
 		client, arguments := inputs(cfg)
 		return completeResourceArguments(ctx, client, arguments, request, allowedTypes, repetition)
 	}
 }
 
-func fixedResourceArgumentCompleter[C any](
-	inputs resourceCompletionInputs[C],
-	resourceType string,
-) cli.ValueCompleter[C] {
+func fixedResourceArgumentCompleter[C any](inputs resourceCompletionInputs[C], resourceType string) cli.ValueCompleter[C] {
 	return func(ctx context.Context, cfg *C, request cli.ValueCompletionRequest) (cli.CompletionContribution, error) {
 		client, arguments := inputs(cfg)
 		if len(arguments) != 0 {
@@ -63,14 +56,7 @@ func fixedResourceArgumentCompleter[C any](
 	}
 }
 
-func completeResourceArguments(
-	ctx context.Context,
-	client clientConfig,
-	arguments []string,
-	request cli.ValueCompletionRequest,
-	allowedTypes []string,
-	repetition resourceArgumentRepetition,
-) (cli.CompletionContribution, error) {
+func completeResourceArguments(ctx context.Context, client clientConfig, arguments []string, request cli.ValueCompletionRequest, allowedTypes []string, repetition resourceArgumentRepetition) (cli.CompletionContribution, error) {
 	if len(arguments) > 0 && !strings.Contains(arguments[0], "/") {
 		if repetition == resourceArgumentSingle && len(arguments) != 1 {
 			return cli.CompletionContribution{}, nil
@@ -107,18 +93,12 @@ func completeResourceArguments(
 	return completion, nil
 }
 
-func completeAllowedResourceTypes(
-	getter genericclioptions.RESTClientGetter,
-	allowedTypes []string,
-	prefix string,
-	form resourceCompletionForm,
-) (cli.CompletionContribution, error) {
+func completeAllowedResourceTypes(getter genericclioptions.RESTClientGetter, allowedTypes []string, prefix string, form resourceCompletionForm) (cli.CompletionContribution, error) {
 	if len(allowedTypes) == 0 {
-		completion, err := completeResourceTypes(getter, form)
+		completion, err := completeResourceTypes(getter, form, prefix)
 		if err != nil {
 			return cli.CompletionContribution{}, err
 		}
-		completion.Candidates = filterCompletionCandidates(completion.Candidates, prefix, nil)
 		if form == resourceCompletionQualified {
 			completion.Spacing = cli.CompletionSpacingNoSpace
 		}
@@ -148,20 +128,30 @@ func completeAllowedResourceTypes(
 	return completion, nil
 }
 
-func completeResourceTypes(getter genericclioptions.RESTClientGetter, form resourceCompletionForm) (cli.CompletionContribution, error) {
+func completeResourceTypes(getter genericclioptions.RESTClientGetter, form resourceCompletionForm, prefix string) (cli.CompletionContribution, error) {
 	names, err := discoveredResourceTypeNames(getter, resourceDiscoveryReadable)
 	if err != nil {
 		return cli.CompletionContribution{}, err
 	}
+	completedPrefix := ""
+	suffix := prefix
+	if comma := strings.LastIndex(prefix, ","); comma >= 0 {
+		completedPrefix = prefix[:comma+1]
+		suffix = prefix[comma+1:]
+	}
 	candidates := make([]cli.CompletionCandidate, 0, len(names))
 	for _, name := range names {
+		if !strings.HasPrefix(name, suffix) {
+			continue
+		}
+		value := completedPrefix + name
 		spacing := cli.CompletionSpacingDefault
 		if form == resourceCompletionQualified {
-			name += "/"
+			value += "/"
 			spacing = cli.CompletionSpacingNoSpace
 		}
 		candidates = append(candidates, cli.CompletionCandidate{
-			Value:   name,
+			Value:   value,
 			Kind:    cli.CompletionCandidateResource,
 			Spacing: spacing,
 		})
@@ -180,13 +170,7 @@ func completeResourceNames(ctx context.Context, getter genericclioptions.RESTCli
 	return completeResourceNamesInNamespace(ctx, getter, resourceType, namespace, form)
 }
 
-func completeResourceNamesInNamespace(
-	ctx context.Context,
-	getter genericclioptions.RESTClientGetter,
-	resourceType string,
-	namespace string,
-	form resourceCompletionForm,
-) (cli.CompletionContribution, error) {
+func completeResourceNamesInNamespace(ctx context.Context, getter genericclioptions.RESTClientGetter, resourceType, namespace string, form resourceCompletionForm) (cli.CompletionContribution, error) {
 	result := resource.NewBuilder(getter).
 		Unstructured().
 		NamespaceParam(namespace).
@@ -252,9 +236,6 @@ func discoveredResourceTypeNames(getter genericclioptions.RESTClientGetter, mode
 				name += "." + group
 			}
 			values[name] = struct{}{}
-			for _, shortName := range apiResource.ShortNames {
-				values[shortName] = struct{}{}
-			}
 		}
 	}
 

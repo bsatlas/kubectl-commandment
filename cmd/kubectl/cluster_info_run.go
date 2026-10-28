@@ -34,8 +34,7 @@ func runClusterInfo(_ context.Context, cfg *clusterInfoConfig) error {
 func runClusterInfoDump(_ context.Context, cfg *clusterInfoDumpConfig) error {
 	getter := restClientGetter(cfg.Client)
 	printFlags := genericclioptions.NewPrintFlags("").WithTypeSetter(scheme.Scheme).WithDefaultOutput("json")
-	configurePrintFlags(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
-	printFlags.OutputFlagSpecified = func() bool { return explicitFlagValue(cfg.OutputState) }
+	configurePrintFlagsWithOutputState(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields, cfg.OutputState)
 	printer, err := printFlags.ToPrinter()
 	if err != nil {
 		return err

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"time"
 
 	"github.com/abstractionsinc/commandment/cli"
@@ -103,7 +104,7 @@ func clusterInfoDumpCommand(client cli.Destination[rootConfig, clientConfig]) cl
 				Description("A comma separated list of namespaces to dump.")
 			namespacesFlag.Long("namespaces")
 
-			output := cb.Values.String(&cb.Config.Output)
+			output := cb.Values.Value(&cb.Config.Output, printOutputLanguage)
 			cb.Values.Default(output, "json")
 			outputFlag := cb.Flags.ValueFor(output).Description("Output format. One of: (json, yaml, kyaml, name, go-template, go-template-file, template, templatefile, jsonpath, jsonpath-as-json, jsonpath-file).")
 			outputFlag.Long("output")
@@ -123,6 +124,12 @@ func clusterInfoDumpCommand(client cli.Destination[rootConfig, clientConfig]) cl
 
 			templateFlag := cb.Flags.String(&cb.Config.Template).Description("Template string or path to template file to use when -o=go-template, -o=go-template-file. The template format is golang templates [http://golang.org/pkg/text/template/#pkg-overview].")
 			templateFlag.Long("template")
+
+			cb.Rule.Check("kubectl-cluster-info-dump-output-template", func(_ context.Context, cfg *clusterInfoDumpConfig, _ cli.Dependencies) (bool, error) {
+				return validPrintOutputTemplate(cfg.Output, cfg.Template), nil
+			}).
+				DependsOn(output.OptionalDependency()).
+				DependsOn(templateFlag.Destination().OptionalDependency())
 
 			ignoredArgs := cb.Values.Sequence(&cb.Config.IgnoredArgs, cli.Value.String())
 			cb.Arguments.Form(func(form *cli.ArgumentFormBuilder[clusterInfoDumpConfig]) {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -84,7 +85,7 @@ func eventsCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command
 			noHeadersFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.NoHeaders))
 			noHeadersFlag.Description("When using the default output format, don't print headers.").Long("no-headers").ImplicitValue(true)
 
-			output := cb.Values.String(&cb.Config.Output)
+			output := cb.Values.Value(&cb.Config.Output, printOutputLanguage)
 			outputFlag := cb.Flags.ValueFor(output)
 			outputFlag.Description("Output format. One of: (json, yaml, kyaml, name, go-template, go-template-file, template, templatefile, jsonpath, jsonpath-as-json, jsonpath-file).").Long("output")
 			outputFlag.Short('o')
@@ -95,6 +96,12 @@ func eventsCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command
 
 			templateFlag := cb.Flags.String(&cb.Config.Template)
 			templateFlag.Description("Template string or path to template file to use when -o=go-template, -o=go-template-file.").Long("template")
+
+			cb.Rule.Check("kubectl-events-output-template", func(_ context.Context, cfg *eventsConfig, _ cli.Dependencies) (bool, error) {
+				return validPrintOutputTemplate(cfg.Output, cfg.Template), nil
+			}).
+				DependsOn(output.OptionalDependency()).
+				DependsOn(templateFlag.Destination().OptionalDependency())
 
 			typesValue := cb.Values.Sequence(&cb.Config.Types, eventTypeLanguage)
 			typesFlag := cb.Flags.Sequence(typesValue)

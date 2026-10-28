@@ -318,6 +318,37 @@ func getCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[ge
 				DependsOn(watch.Destination().OptionalDependency()).
 				DependsOn(watchOnly.Destination().OptionalDependency())
 
+			cb.Rule.Check("kubectl-get-resource-input", func(_ context.Context, cfg *getConfig, _ cli.Dependencies) (bool, error) {
+				if cfg.Raw != "" {
+					return true, nil
+				}
+				resourceArguments := cfg.ResourceType != "" || len(cfg.QualifiedResources) > 0
+				fileInput := len(cfg.Filenames) > 0 || cfg.Kustomize != ""
+				return !resourceArguments || !fileInput, nil
+			}).
+				DependsOn(raw.Destination().OptionalDependency()).
+				DependsOn(resourceType.OptionalDependency()).
+				DependsOn(qualifiedResources.OptionalDependency()).
+				DependsOn(filenames.OptionalDependency()).
+				DependsOn(kustomize.Destination().OptionalDependency())
+
+			cb.Rule.Check("kubectl-get-selector-target", func(_ context.Context, cfg *getConfig, _ cli.Dependencies) (bool, error) {
+				selector := cfg.LabelSelector != "" || cfg.FieldSelector != ""
+				namedResources := len(cfg.Names) > 0 || len(cfg.QualifiedResources) > 0
+				return !selector || !namedResources, nil
+			}).
+				DependsOn(names.OptionalDependency()).
+				DependsOn(qualifiedResources.OptionalDependency()).
+				DependsOn(labelSelector.Destination().OptionalDependency()).
+				DependsOn(fieldSelector.Destination().OptionalDependency())
+
+			cb.Rule.Check("kubectl-get-subresource-target", func(_ context.Context, cfg *getConfig, _ cli.Dependencies) (bool, error) {
+				return cfg.Subresource == "" || cfg.ResourceType == "" || len(cfg.Names) > 0, nil
+			}).
+				DependsOn(subresource.Destination().OptionalDependency()).
+				DependsOn(resourceType.OptionalDependency()).
+				DependsOn(names.OptionalDependency())
+
 			cb.Rule.Check("kubectl-get-filename-source", func(_ context.Context, cfg *getConfig, _ cli.Dependencies) (bool, error) {
 				return cfg.Raw != "" || len(cfg.Filenames) == 0 || cfg.Kustomize == "", nil
 			}).
@@ -448,8 +479,8 @@ func completeOutputFormat(_ context.Context, _ *getConfig, _ cli.ValueCompletion
 	return completion, nil
 }
 
-func completeResourceType(_ context.Context, cfg *getConfig, _ cli.ValueCompletionRequest) (cli.CompletionContribution, error) {
-	return completeResourceTypes(restClientGetter(cfg.Client), resourceCompletionBare)
+func completeResourceType(_ context.Context, cfg *getConfig, request cli.ValueCompletionRequest) (cli.CompletionContribution, error) {
+	return completeResourceTypes(restClientGetter(cfg.Client), resourceCompletionBare, request.Text)
 }
 
 func completeResourceName(resourceType cli.Destination[getConfig, string]) cli.ValueCompleter[getConfig] {
@@ -465,7 +496,7 @@ func completeResourceName(resourceType cli.Destination[getConfig, string]) cli.V
 func completeQualifiedResource(ctx context.Context, cfg *getConfig, request cli.ValueCompletionRequest) (cli.CompletionContribution, error) {
 	resourceType, _, found := strings.Cut(request.Text, "/")
 	if !found {
-		return completeResourceTypes(restClientGetter(cfg.Client), resourceCompletionQualified)
+		return completeResourceTypes(restClientGetter(cfg.Client), resourceCompletionQualified, request.Text)
 	}
 	return completeResourceNames(ctx, restClientGetter(cfg.Client), resourceType, resourceCompletionQualified)
 }

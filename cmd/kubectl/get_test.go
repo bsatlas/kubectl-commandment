@@ -191,6 +191,105 @@ func TestGetRawIgnoresFilenameKustomizeComposition(t *testing.T) {
 	proof.Require(t, clitest.InspectionReady())
 }
 
+func TestGetRejectsNamedResourceWithSelector(t *testing.T) {
+	t.Parallel()
+
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
+	request := cli.InspectionRequest{Args: []string{"get", "pods", "pod-a", "--selector", "app=test"}}
+
+	clitest.Inspect(t.Context(), app, request).Require(t,
+		clitest.InspectionRejected(),
+		clitest.FailsWith(clitest.Diagnostic(cli.DiagnosticRuleViolation).Present()),
+	)
+}
+
+func TestGetRejectsQualifiedResourceWithFieldSelector(t *testing.T) {
+	t.Parallel()
+
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
+	request := cli.InspectionRequest{Args: []string{"get", "pods/pod-a", "--field-selector", "metadata.name=pod-a"}}
+
+	clitest.Inspect(t.Context(), app, request).Require(t,
+		clitest.InspectionRejected(),
+		clitest.FailsWith(clitest.Diagnostic(cli.DiagnosticRuleViolation).Present()),
+	)
+}
+
+func TestGetAllowsBulkResourceWithSelector(t *testing.T) {
+	t.Parallel()
+
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
+	request := cli.InspectionRequest{Args: []string{"get", "pods", "--selector", "app=test"}}
+
+	clitest.Inspect(t.Context(), app, request).Require(t, clitest.InspectionReady())
+}
+
+func TestGetRejectsBulkResourceWithSubresource(t *testing.T) {
+	t.Parallel()
+
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
+	request := cli.InspectionRequest{Args: []string{"get", "pods", "--subresource", "status"}}
+
+	clitest.Inspect(t.Context(), app, request).Require(t,
+		clitest.InspectionRejected(),
+		clitest.FailsWith(clitest.Diagnostic(cli.DiagnosticRuleViolation).Present()),
+	)
+}
+
+func TestGetAllowsNamedResourceWithSubresource(t *testing.T) {
+	t.Parallel()
+
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
+	request := cli.InspectionRequest{Args: []string{"get", "pods", "pod-a", "--subresource", "status"}}
+
+	clitest.Inspect(t.Context(), app, request).Require(t, clitest.InspectionReady())
+}
+
+func TestGetRejectsResourceArgumentsWithFilename(t *testing.T) {
+	t.Parallel()
+
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
+	request := cli.InspectionRequest{Args: []string{"get", "pods", "--filename", "pod.yaml"}}
+
+	clitest.Inspect(t.Context(), app, request).Require(t,
+		clitest.InspectionRejected(),
+		clitest.FailsWith(clitest.Diagnostic(cli.DiagnosticRuleViolation).Present()),
+	)
+}
+
+func TestGetResourceTypeCompletionUsesCanonicalNames(t *testing.T) {
+	t.Parallel()
+
+	server := getTestAPIServer(t)
+	path := writeGetTestKubeconfig(t, server.URL)
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
+	request := cli.CompletionRequest{
+		Args:   []string{"--kubeconfig", path, "get", "po"},
+		Cursor: cli.CompletionCursor{Argument: 3, Byte: 2},
+	}
+
+	proof := clitest.Complete(t.Context(), app, request)
+
+	proof.Require(t,
+		clitest.CompletionItem("pods").Present(),
+		clitest.CompletionItem("po").Absent(),
+	)
+}
+
+func TestGetResourceTypeCompletionPreservesCommaPrefix(t *testing.T) {
+	t.Parallel()
+
+	server := getTestAPIServer(t)
+	path := writeGetTestKubeconfig(t, server.URL)
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
+	request := cli.CompletionRequest{
+		Args:   []string{"--kubeconfig", path, "get", "pods,se"},
+		Cursor: cli.CompletionCursor{Argument: 3, Byte: 7},
+	}
+
+	clitest.Complete(t.Context(), app, request).Require(t, clitest.CompletionItem("pods,secrets").Present())
+}
+
 func writeGetTestKubeconfig(t *testing.T, server string) string {
 	t.Helper()
 
@@ -231,7 +330,7 @@ func getTestAPIServer(t *testing.T) *httptest.Server {
 		},
 		"/api/v1": {
 			contentType: "application/json",
-			body:        `{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"v1","resources":[{"name":"pods","singularName":"pod","namespaced":true,"kind":"Pod","verbs":["get","list"],"shortNames":["po"]}]}`,
+			body:        `{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"v1","resources":[{"name":"pods","singularName":"pod","namespaced":true,"kind":"Pod","verbs":["get","list"],"shortNames":["po"]},{"name":"secrets","singularName":"secret","namespaced":true,"kind":"Secret","verbs":["get","list"],"shortNames":["sec"]}]}`,
 		},
 		"/api/v1/namespaces/test/pods": {
 			contentType: "application/json",

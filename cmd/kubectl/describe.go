@@ -126,6 +126,24 @@ func describeCommand(client cli.Destination[rootConfig, clientConfig]) cli.Comma
 				DependsOn(filenameValue.OptionalDependency()).
 				DependsOn(kustomizeFlag.Destination().OptionalDependency())
 
+			cb.Rule.Check("kubectl-describe-resource-input", func(_ context.Context, cfg *describeConfig, _ cli.Dependencies) (bool, error) {
+				resourceArguments := cfg.ResourceType != "" || len(cfg.QualifiedResources) > 0
+				fileInput := len(cfg.Filename) > 0 || cfg.Kustomize != ""
+				return !resourceArguments || !fileInput, nil
+			}).
+				DependsOn(resourceType.OptionalDependency()).
+				DependsOn(qualifiedResources.OptionalDependency()).
+				DependsOn(filenameValue.OptionalDependency()).
+				DependsOn(kustomizeFlag.Destination().OptionalDependency())
+
+			cb.Rule.Check("kubectl-describe-selector-target", func(_ context.Context, cfg *describeConfig, _ cli.Dependencies) (bool, error) {
+				namedResources := len(cfg.Names) > 0 || len(cfg.QualifiedResources) > 0
+				return cfg.Selector == "" || !namedResources, nil
+			}).
+				DependsOn(names.OptionalDependency()).
+				DependsOn(qualifiedResources.OptionalDependency()).
+				DependsOn(selectorFlag.Destination().OptionalDependency())
+
 			cb.Rule.Check("kubectl-describe-filename-source", func(_ context.Context, cfg *describeConfig, _ cli.Dependencies) (bool, error) {
 				return len(cfg.Filename) == 0 || cfg.Kustomize == "", nil
 			}).
@@ -143,8 +161,8 @@ func describeCommand(client cli.Destination[rootConfig, clientConfig]) cli.Comma
 	return cmd
 }
 
-func completeDescribeResourceType(_ context.Context, cfg *describeConfig, _ cli.ValueCompletionRequest) (cli.CompletionContribution, error) {
-	return completeResourceTypes(restClientGetter(cfg.Client), resourceCompletionBare)
+func completeDescribeResourceType(_ context.Context, cfg *describeConfig, request cli.ValueCompletionRequest) (cli.CompletionContribution, error) {
+	return completeResourceTypes(restClientGetter(cfg.Client), resourceCompletionBare, request.Text)
 }
 
 func completeDescribeResourceName(resourceType cli.Destination[describeConfig, string]) cli.ValueCompleter[describeConfig] {
@@ -160,7 +178,7 @@ func completeDescribeResourceName(resourceType cli.Destination[describeConfig, s
 func completeDescribeQualifiedResource(ctx context.Context, cfg *describeConfig, request cli.ValueCompletionRequest) (cli.CompletionContribution, error) {
 	resourceType, _, found := strings.Cut(request.Text, "/")
 	if !found {
-		return completeResourceTypes(restClientGetter(cfg.Client), resourceCompletionQualified)
+		return completeResourceTypes(restClientGetter(cfg.Client), resourceCompletionQualified, request.Text)
 	}
 	return completeResourceNames(ctx, restClientGetter(cfg.Client), resourceType, resourceCompletionQualified)
 }
