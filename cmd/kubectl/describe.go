@@ -1,22 +1,31 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"strings"
+
 	"github.com/abstractionsinc/commandment/cli"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/cli-runtime/pkg/genericiooptions"
+	"k8s.io/kubectl/pkg/cmd/util"
+	"k8s.io/kubectl/pkg/describe"
 )
 
 type describeConfig struct {
-	Client          clientConfig
-	Streams         genericiooptions.IOStreams
-	ShowEventsState cli.OptionalValue[cli.ValueState]
-	Arguments       []string
-	AllNamespaces   bool
-	ChunkSize       int64
-	Filename        []string
-	Kustomize       string
-	Recursive       bool
-	Selector        string
-	ShowEvents      bool
+	Client             clientConfig
+	Streams            genericiooptions.IOStreams
+	ShowEventsState    cli.OptionalValue[cli.ValueState]
+	ResourceType       string
+	Names              []string
+	QualifiedResources []string
+	AllNamespaces      bool
+	ChunkSize          int64
+	Filename           []string
+	Kustomize          string
+	Recursive          bool
+	Selector           string
+	ShowEvents         bool
 }
 
 func describeCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[describeConfig] {
@@ -58,56 +67,131 @@ func describeCommand(client cli.Destination[rootConfig, clientConfig]) cli.Comma
 			cb.Access.Stdout(&cb.Config.Streams.Out)
 			cb.Access.Stderr(&cb.Config.Streams.ErrOut)
 
-			arguments := cb.Values.Sequence(&cb.Config.Arguments, cli.Value.String())
+			resourceType := cb.Values.Value(&cb.Config.ResourceType, resourceTypeLanguage)
+			names := cb.Values.Sequence(&cb.Config.Names, describeNamePrefixLanguage)
+			qualifiedResources := cb.Values.Sequence(&cb.Config.QualifiedResources, qualifiedResourceLanguage)
+
+			cb.Arguments.Form(func(_ *cli.ArgumentFormBuilder[describeConfig]) {})
 			cb.Arguments.Form(func(form *cli.ArgumentFormBuilder[describeConfig]) {
-				form.Sequence(arguments, "ARG", cli.Count.ZeroOrMore()).
-					CompleteBy(resourceArgumentCompleter(
-						func(cfg *describeConfig) (clientConfig, []string) { return cfg.Client, cfg.Arguments },
-						nil,
-						resourceArgumentRepeated,
-					)).
+				form.ValueFor(resourceType, "TYPE[.VERSION][.GROUP]").
+					CompleteBy(completeDescribeResourceType).
+					From(client)
+				form.Sequence(names, "NAME_PREFIX", cli.Count.ZeroOrMore()).
+					CompleteBy(completeDescribeResourceName(resourceType)).
+					From(client, resourceType.OptionalDependency())
+			})
+			cb.Arguments.Form(func(form *cli.ArgumentFormBuilder[describeConfig]) {
+				form.Sequence(qualifiedResources, "TYPE[.VERSION][.GROUP]/NAME", cli.Count.OneOrMore()).
+					CompleteBy(completeDescribeQualifiedResource).
 					From(client)
 			})
 
-			allNamespacesFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.AllNamespaces))
-			allNamespacesFlag = allNamespacesFlag.Description("If present, list the requested object(s) across all namespaces. Namespace in current context is ignored even if specified with --namespace.")
+			allNamespacesFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.AllNamespaces)).Description("If present, list the requested object(s) across all namespaces. Namespace in current context is ignored even if specified with --namespace.")
 			allNamespacesFlag.Long("all-namespaces").ImplicitValue(true)
 			allNamespacesFlag.Short('A').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
 
-			chunkSizeFlag := cb.Flags.Value(&cb.Config.ChunkSize, int64Language())
-			chunkSizeFlag = chunkSizeFlag.Description("Return large lists in chunks rather than all at once. Pass 0 to disable.")
+			chunkSizeFlag := cb.Flags.Value(&cb.Config.ChunkSize, int64Language()).Description("Return large lists in chunks rather than all at once. Pass 0 to disable.")
 			cb.Values.Default(chunkSizeFlag, int64(500))
 			chunkSizeFlag.Long("chunk-size")
 
 			filenameValue := cb.Values.Sequence(&cb.Config.Filename, cli.Value.String())
-			filenameFlag := cb.Flags.Sequence(filenameValue)
-			filenameFlag = filenameFlag.DelimitedBy(",")
-			filenameFlag = filenameFlag.Description("Filename, directory, or URL to files containing the resource to describe")
+			filenameFlag := cb.Flags.Sequence(filenameValue).
+				DelimitedBy(",").
+				Description("Filename, directory, or URL to files containing the resource to describe")
 			filenameFlag.Long("filename")
 			filenameFlag.Short('f')
 
-			kustomizeFlag := cb.Flags.String(&cb.Config.Kustomize)
-			kustomizeFlag = kustomizeFlag.Description("Process the kustomization directory. This flag can't be used together with -f or -R.")
+			kustomizeFlag := cb.Flags.String(&cb.Config.Kustomize).Description("Process the kustomization directory. This flag can't be used together with -f or -R.")
 			kustomizeFlag.Long("kustomize")
 			kustomizeFlag.Short('k')
 
-			recursiveFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Recursive))
-			recursiveFlag = recursiveFlag.Description("Process the directory used in -f, --filename recursively. Useful when you want to manage related manifests organized within the same directory.")
+			recursiveFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Recursive)).Description("Process the directory used in -f, --filename recursively. Useful when you want to manage related manifests organized within the same directory.")
 			recursiveFlag.Long("recursive").ImplicitValue(true)
 			recursiveFlag.Short('R').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
 
-			selectorFlag := cb.Flags.String(&cb.Config.Selector)
-			selectorFlag = selectorFlag.Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
+			selectorFlag := cb.Flags.String(&cb.Config.Selector).Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
 			selectorFlag.Long("selector")
 			selectorFlag.Short('l')
 
-			showEventsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowEvents))
-			showEventsFlag = showEventsFlag.Description("If true, display events related to the described object. Defaults to true for a single object, false for multiple objects and prefix matching.")
+			showEventsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowEvents)).Description("If true, display events related to the described object. Defaults to true for a single object, false for multiple objects and prefix matching.")
 			cb.Values.Default(showEventsFlag, true)
 			showEventsFlag.Long("show-events").ImplicitValue(true)
 			cb.Access.ValueState(showEventsFlag, &cb.Config.ShowEventsState)
+
+			cb.Rule.Check("kubectl-describe-input-source", func(_ context.Context, cfg *describeConfig, _ cli.Dependencies) (bool, error) {
+				return cfg.ResourceType != "" || len(cfg.QualifiedResources) > 0 || len(cfg.Filename) > 0 || cfg.Kustomize != "", nil
+			}).
+				DependsOn(resourceType.OptionalDependency()).
+				DependsOn(qualifiedResources.OptionalDependency()).
+				DependsOn(filenameValue.OptionalDependency()).
+				DependsOn(kustomizeFlag.Destination().OptionalDependency())
+
+			cb.Rule.Check("kubectl-describe-filename-source", func(_ context.Context, cfg *describeConfig, _ cli.Dependencies) (bool, error) {
+				return len(cfg.Filename) == 0 || cfg.Kustomize == "", nil
+			}).
+				DependsOn(filenameValue.OptionalDependency()).
+				DependsOn(kustomizeFlag.Destination().OptionalDependency())
+
+			cb.Rule.Check("kubectl-describe-kustomize-recursive", func(_ context.Context, cfg *describeConfig, _ cli.Dependencies) (bool, error) {
+				return cfg.Kustomize == "" || !cfg.Recursive, nil
+			}).
+				DependsOn(kustomizeFlag.Destination().OptionalDependency()).
+				DependsOn(recursiveFlag.Destination().OptionalDependency())
 		},
 		Run: runDescribe,
 	}
 	return cmd
+}
+
+func completeDescribeResourceType(_ context.Context, cfg *describeConfig, _ cli.ValueCompletionRequest) (cli.CompletionContribution, error) {
+	return completeResourceTypes(restClientGetter(cfg.Client), resourceCompletionBare)
+}
+
+func completeDescribeResourceName(resourceType cli.Destination[describeConfig, string]) cli.ValueCompleter[describeConfig] {
+	return func(ctx context.Context, cfg *describeConfig, _ cli.ValueCompletionRequest) (cli.CompletionContribution, error) {
+		state, ok := cli.ValueStateFromContext(ctx, resourceType)
+		if !ok || state.State() != cli.ResolutionStateResolved || cfg.ResourceType == "" {
+			return cli.CompletionContribution{}, nil
+		}
+		return completeResourceNames(ctx, restClientGetter(cfg.Client), cfg.ResourceType, resourceCompletionBare)
+	}
+}
+
+func completeDescribeQualifiedResource(ctx context.Context, cfg *describeConfig, request cli.ValueCompletionRequest) (cli.CompletionContribution, error) {
+	resourceType, _, found := strings.Cut(request.Text, "/")
+	if !found {
+		return completeResourceTypes(restClientGetter(cfg.Client), resourceCompletionQualified)
+	}
+	return completeResourceNames(ctx, restClientGetter(cfg.Client), resourceType, resourceCompletionQualified)
+}
+
+var describeNamePrefixLanguage = cli.ValueCodec[string]{
+	Name: "kubectl-describe-name-prefix",
+	Parse: func(value string) (string, error) {
+		if strings.Contains(value, "/") {
+			return "", cli.Rejection.Message(
+				"name-prefix",
+				fmt.Sprintf("expected name prefix, got %q", value),
+				cli.Rejection.At(0, 0, len(value)),
+			)
+		}
+		return value, nil
+	},
+	Format:   func(value string) string { return value },
+	Snapshot: func(value string) string { return value },
+}
+
+func describeResourceDescriber(factory util.Factory) func(*meta.RESTMapping) (describe.ResourceDescriber, error) {
+	return func(mapping *meta.RESTMapping) (describe.ResourceDescriber, error) {
+		return describe.DescriberFn(factory, mapping)
+	}
+}
+
+func describeSettings(cfg *describeConfig) *describe.DescriberSettings {
+	settings := &describe.DescriberSettings{
+		ShowEvents: cfg.ShowEvents,
+		ChunkSize:  cfg.ChunkSize,
+	}
+
+	return settings
 }

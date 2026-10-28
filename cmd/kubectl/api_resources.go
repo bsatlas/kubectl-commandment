@@ -59,48 +59,45 @@ func apiResourcesCommand(client cli.Destination[rootConfig, clientConfig]) cli.C
 			cb.Access.Value(client, &cb.Config.Client)
 			cb.Access.Stdout(&cb.Config.Stdout)
 
-			apiGroupFlag := cb.Flags.String(&cb.Config.APIGroup)
-			apiGroupFlag = apiGroupFlag.Description("Limit to resources in the specified API group.")
+			apiGroupFlag := cb.Flags.String(&cb.Config.APIGroup).Description("Limit to resources in the specified API group.")
 			apiGroupFlag.Long("api-group")
 			cb.Access.ValueState(apiGroupFlag, &cb.Config.APIGroupState)
 
-			cachedFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Cached))
-			cachedFlag = cachedFlag.Description("Use the cached list of resources if available.")
+			cachedFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Cached)).Description("Use the cached list of resources if available.")
 			cachedFlag.Long("cached").ImplicitValue(true)
 
 			categoriesValue := cb.Values.Sequence(&cb.Config.Categories, cli.Value.String())
-			categoriesFlag := cb.Flags.Sequence(categoriesValue)
-			categoriesFlag = categoriesFlag.DelimitedBy(",")
-			categoriesFlag = categoriesFlag.Description("Limit to resources that belong to the specified categories.")
+			categoriesFlag := cb.Flags.Sequence(categoriesValue).
+				DelimitedBy(",").
+				Description("Limit to resources that belong to the specified categories.")
 			categoriesFlag.Long("categories")
 
-			namespacedFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Namespaced))
-			namespacedFlag = namespacedFlag.Description("If false, non-namespaced resources will be returned, otherwise returning namespaced resources by default.")
+			namespacedFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Namespaced)).Description("If false, non-namespaced resources will be returned, otherwise returning namespaced resources by default.")
 			cb.Values.Default(namespacedFlag, true)
 			namespacedFlag.Long("namespaced").ImplicitValue(true)
 			cb.Access.ValueState(namespacedFlag, &cb.Config.NamespacedState)
 
-			noHeadersFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.NoHeaders))
-			noHeadersFlag = noHeadersFlag.Description("When using the default or custom-column output format, don't print headers (default print headers).")
+			noHeadersFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.NoHeaders)).Description("When using the default or custom-column output format, don't print headers (default print headers).")
 			noHeadersFlag.Long("no-headers").ImplicitValue(true)
 
-			outputFlag := cb.Flags.String(&cb.Config.Output)
-			outputFlag = outputFlag.Description("Output format. One of: (json, yaml, kyaml, name, wide).")
+			output := cb.Values.String(&cb.Config.Output)
+			outputFlag := cb.Flags.ValueFor(output).Description("Output format. One of: (json, yaml, kyaml, name, wide).")
 			outputFlag.Long("output")
 			outputFlag.Short('o')
+			cb.Rule.In(output, "", "json", "yaml", "kyaml", "name", "wide")
 
-			showManagedFieldsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowManagedFields))
-			showManagedFieldsFlag = showManagedFieldsFlag.Description("If true, keep the managedFields when printing objects in JSON or YAML format.")
+			showManagedFieldsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowManagedFields)).Description("If true, keep the managedFields when printing objects in JSON or YAML format.")
 			showManagedFieldsFlag.Long("show-managed-fields").ImplicitValue(true)
 
-			sortByFlag := cb.Flags.String(&cb.Config.SortBy)
-			sortByFlag = sortByFlag.Description("If non-empty, sort list of resources using specified field. The field can be either 'name' or 'kind'.")
+			sortBy := cb.Values.String(&cb.Config.SortBy)
+			sortByFlag := cb.Flags.ValueFor(sortBy).Description("If non-empty, sort list of resources using specified field. The field can be either 'name' or 'kind'.")
 			sortByFlag.Long("sort-by")
+			cb.Rule.In(sortBy, "", "name", "kind")
 
 			verbsValue := cb.Values.Sequence(&cb.Config.Verbs, cli.Value.String())
-			verbsFlag := cb.Flags.Sequence(verbsValue)
-			verbsFlag = verbsFlag.DelimitedBy(",")
-			verbsFlag = verbsFlag.Description("Limit to resources that support the specified verbs.")
+			verbsFlag := cb.Flags.Sequence(verbsValue).
+				DelimitedBy(",").
+				Description("Limit to resources that support the specified verbs.")
 			verbsFlag.Long("verbs")
 		},
 		Run: runAPIResources,

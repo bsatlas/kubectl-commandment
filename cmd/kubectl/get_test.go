@@ -2,9 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
-	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/abstractionsinc/commandment/cli"
+	"github.com/abstractionsinc/commandment/clitest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/clientcmd/api"
 )
@@ -21,40 +19,36 @@ func TestGetResourceNameCompletionUsesSelectedKubernetesAPI(t *testing.T) {
 
 	server := getTestAPIServer(t)
 	path := writeGetTestKubeconfig(t, server.URL)
-	app := compileGetTestApplication(t)
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
 
-	completion, err := app.Complete(t.Context(), cli.CompletionRequest{
+	request := cli.CompletionRequest{
 		Args: []string{"--kubeconfig", path, "get", "pods", "pod"},
 		Cursor: cli.CompletionCursor{
 			Argument: 4,
 			Byte:     3,
 		},
-	})
-	if err != nil {
-		t.Logf("completion on error: %#v", completion)
-		t.Logf("completion cause: %v", errors.Unwrap(err))
-		for i, diagnostic := range completion.Diagnostics {
-			t.Logf("diagnostic[%d]: %#v", i, diagnostic)
-		}
-		t.Fatalf("Complete() error = %v", err)
 	}
-	if !getCompletionContains(completion, "pod-a") {
-		t.Fatalf("completion items = %#v, want pod-a", completion.Items)
-	}
+
+	proof := clitest.Complete(t.Context(), app, request)
+
+	proof.Require(t, clitest.CompletionItem("pod-a").Present())
 }
+
 func TestGetRawUsesSelectedKubeconfig(t *testing.T) {
 	t.Parallel()
 
 	server := getTestAPIServer(t)
 	path := writeGetTestKubeconfig(t, server.URL)
-	app := compileGetTestApplication(t)
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
 
 	var stdout bytes.Buffer
-	err := app.Run(t.Context(), cli.RunRequest{
+	request := cli.RunRequest{
 		Args:   []string{"get", "--raw", "/healthz", "--kubeconfig", path},
 		Stdout: &stdout,
 		Stderr: io.Discard,
-	})
+	}
+
+	err := app.Run(t.Context(), request)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -66,49 +60,135 @@ func TestGetRawUsesSelectedKubeconfig(t *testing.T) {
 func TestGetPolicyRejectsRawWithResourceBeforeExecution(t *testing.T) {
 	t.Parallel()
 
-	app := compileGetTestApplication(t)
-	err := app.Run(t.Context(), cli.RunRequest{
-		Args:   []string{"get", "pods", "--raw", "/api"},
-		Stdout: io.Discard,
-		Stderr: io.Discard,
-	})
-	if err == nil {
-		t.Fatal("Run() error = nil, want policy rejection")
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
+	request := cli.InspectionRequest{
+		Args: []string{"get", "pods", "--raw", "/api"},
 	}
+
+	proof := clitest.Inspect(t.Context(), app, request)
+
+	proof.Require(t,
+		clitest.InspectionRejected(),
+		clitest.FailsWith(clitest.Diagnostic(cli.DiagnosticRuleViolation).Present()),
+	)
 }
 
-func compileGetTestApplication(t *testing.T) cli.Application {
-	t.Helper()
+func TestGetGrammarRejectsMixedResourceAndQualifiedName(t *testing.T) {
+	t.Parallel()
 
-	definition := cli.Definition[rootConfig]{
-		Name: "kubectl",
-		Declare: func(root *cli.CommandBuilder[rootConfig]) {
-			root.Dialect.FlagOrder(cli.FlagOrderInterspersed)
-			kubeconfig := root.Values.String(&root.Config.Kubeconfig)
-			root.Values.Default(kubeconfig, "")
-			root.Flags.ValueFor(kubeconfig).Placement(cli.FlagPlacementSubtree).Long("kubeconfig")
-			client := root.Values.Derive(&root.Config.Client, cli.Value.ComputedBy(func(
-				_ context.Context,
-				_ *rootConfig,
-				dependencies cli.Dependencies,
-			) (clientConfig, error) {
-				path, ok := dependencies.Get(kubeconfig)
-				if !ok {
-					return clientConfig{}, fmt.Errorf("kubeconfig dependency is unavailable")
-				}
-				client := clientConfig{
-					Kubeconfig: path,
-				}
-				return client, nil
-			}).From(kubeconfig))
-			root.Subcommands.Command(getCommand(client))
-		},
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
+	request := cli.InspectionRequest{
+		Args: []string{"get", "pods", "service/frontend"},
 	}
-	app, err := cli.Compile(definition)
-	if err != nil {
-		t.Fatalf("Compile() error = %v", err)
+
+	proof := clitest.Inspect(t.Context(), app, request)
+
+	proof.Require(t,
+		clitest.InspectionRejected(),
+		clitest.FailsWith(clitest.Diagnostic(cli.DiagnosticInvalidValue).Present()),
+	)
+}
+
+func TestGetGrammarAcceptsMultipleTypesWithName(t *testing.T) {
+	t.Parallel()
+
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
+	request := cli.InspectionRequest{
+		Args: []string{"get", "pods,services", "frontend"},
 	}
-	return app
+
+	proof := clitest.Inspect(t.Context(), app, request)
+
+	proof.Require(t, clitest.InspectionReady())
+}
+
+func TestGetFilenameConsumesOneTokenPerOccurrence(t *testing.T) {
+	t.Parallel()
+
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
+	request := cli.InspectionRequest{
+		Args: []string{"get", "--filename", "pod.yaml", "pods"},
+	}
+
+	proof := clitest.Inspect(t.Context(), app, request)
+
+	proof.Require(t,
+		clitest.InspectionReady(),
+		clitest.TokenAt(2).Role(cli.TokenRoleFlagValue),
+		clitest.TokenAt(3).Role(cli.TokenRolePositional),
+	)
+}
+
+func TestGetLabelColumnsConsumesOneTokenPerOccurrence(t *testing.T) {
+	t.Parallel()
+
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
+	request := cli.InspectionRequest{
+		Args: []string{"get", "pods", "--label-columns", "app", "frontend"},
+	}
+
+	proof := clitest.Inspect(t.Context(), app, request)
+
+	proof.Require(t,
+		clitest.InspectionReady(),
+		clitest.TokenAt(3).Role(cli.TokenRoleFlagValue),
+		clitest.TokenAt(4).Role(cli.TokenRolePositional),
+	)
+}
+
+func TestGetRawAllowsExplicitFalseWatch(t *testing.T) {
+	t.Parallel()
+
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
+	request := cli.InspectionRequest{
+		Args: []string{"get", "--raw", "/api", "--watch=false"},
+	}
+
+	proof := clitest.Inspect(t.Context(), app, request)
+
+	proof.Require(t, clitest.InspectionReady())
+}
+
+func TestGetCustomColumnsAcceptsTemplateFlag(t *testing.T) {
+	t.Parallel()
+
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
+	request := cli.InspectionRequest{
+		Args: []string{"get", "pods", "--output", "custom-columns", "--template", "NAME:.metadata.name"},
+	}
+
+	proof := clitest.Inspect(t.Context(), app, request)
+
+	proof.Require(t, clitest.InspectionReady())
+}
+
+func TestGetInlineTemplateRejectsTemplateFlag(t *testing.T) {
+	t.Parallel()
+
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
+	request := cli.InspectionRequest{
+		Args: []string{"get", "pods", "--output", "go-template={{.metadata.name}}", "--template", "{{.metadata.namespace}}"},
+	}
+
+	proof := clitest.Inspect(t.Context(), app, request)
+
+	proof.Require(t,
+		clitest.InspectionRejected(),
+		clitest.FailsWith(clitest.Diagnostic(cli.DiagnosticRuleViolation).Present()),
+	)
+}
+
+func TestGetRawIgnoresFilenameKustomizeComposition(t *testing.T) {
+	t.Parallel()
+
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
+	request := cli.InspectionRequest{
+		Args: []string{"get", "--raw", "/api", "--filename", "pod.yaml", "--kustomize", "dir", "--recursive"},
+	}
+
+	proof := clitest.Inspect(t.Context(), app, request)
+
+	proof.Require(t, clitest.InspectionReady())
 }
 
 func writeGetTestKubeconfig(t *testing.T, server string) string {
@@ -174,13 +254,4 @@ func getTestAPIServer(t *testing.T) *httptest.Server {
 	}))
 	t.Cleanup(server.Close)
 	return server
-}
-
-func getCompletionContains(completion cli.Completion, value string) bool {
-	for _, item := range completion.Items {
-		if item.Value == value {
-			return true
-		}
-	}
-	return false
 }

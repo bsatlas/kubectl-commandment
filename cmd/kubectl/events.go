@@ -1,6 +1,9 @@
 package main
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/abstractionsinc/commandment/cli"
 	"k8s.io/cli-runtime/pkg/genericiooptions"
 )
@@ -11,13 +14,20 @@ type eventsConfig struct {
 	AllNamespaces            bool
 	AllowMissingTemplateKeys bool
 	ChunkSize                int64
-	For                      string
+	For                      eventSubject
 	NoHeaders                bool
 	Output                   string
+	OutputState              cli.OptionalValue[cli.ValueState]
 	ShowManagedFields        bool
 	Template                 string
 	Types                    []string
 	Watch                    bool
+	IgnoredArgs              []string
+}
+
+type eventSubject struct {
+	Resource string
+	Name     string
 }
 
 func eventsCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[eventsConfig] {
@@ -67,15 +77,18 @@ func eventsCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command
 			chunkSizeFlag.Description("Return large lists in chunks rather than all at once. Pass 0 to disable.").Long("chunk-size")
 			cb.Values.Default(chunkSizeFlag, int64(500))
 
-			forFlag := cb.Flags.String(&cb.Config.For)
+			forValue := cb.Values.Value(&cb.Config.For, eventSubjectLanguage)
+			forFlag := cb.Flags.ValueFor(forValue)
 			forFlag.Description("Filter events to only those pertaining to the specified resource.").Long("for")
 
 			noHeadersFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.NoHeaders))
 			noHeadersFlag.Description("When using the default output format, don't print headers.").Long("no-headers").ImplicitValue(true)
 
-			outputFlag := cb.Flags.String(&cb.Config.Output)
+			output := cb.Values.String(&cb.Config.Output)
+			outputFlag := cb.Flags.ValueFor(output)
 			outputFlag.Description("Output format. One of: (json, yaml, kyaml, name, go-template, go-template-file, template, templatefile, jsonpath, jsonpath-as-json, jsonpath-file).").Long("output")
 			outputFlag.Short('o')
+			cb.Access.ValueState(outputFlag, &cb.Config.OutputState)
 
 			showManagedFieldsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowManagedFields))
 			showManagedFieldsFlag.Description("If true, keep the managedFields when printing objects in JSON or YAML format.").Long("show-managed-fields").ImplicitValue(true)
@@ -83,15 +96,75 @@ func eventsCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command
 			templateFlag := cb.Flags.String(&cb.Config.Template)
 			templateFlag.Description("Template string or path to template file to use when -o=go-template, -o=go-template-file.").Long("template")
 
-			typesValue := cb.Values.Sequence(&cb.Config.Types, cli.Value.String())
+			typesValue := cb.Values.Sequence(&cb.Config.Types, eventTypeLanguage)
 			typesFlag := cb.Flags.Sequence(typesValue)
 			typesFlag.DelimitedBy(",").Description("Output only events of given types.").Long("types")
 
 			watchFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Watch))
 			watchFlag.Description("After listing the requested events, watch for more events.").Long("watch").ImplicitValue(true)
 			watchFlag.Short('w').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
+
+			ignoredArgs := cb.Values.Sequence(&cb.Config.IgnoredArgs, cli.Value.String())
+			cb.Arguments.Form(func(form *cli.ArgumentFormBuilder[eventsConfig]) {
+				form.Sequence(ignoredArgs, "ARG", cli.Count.ZeroOrMore()).Hidden()
+			})
 		},
 		Run: runEvents,
 	}
 	return cmd
+}
+
+var eventTypeLanguage = cli.ValueCodec[string]{
+	Name: "kubectl-event-type",
+	Parse: func(value string) (string, error) {
+		switch {
+		case strings.EqualFold(value, "Normal"):
+			return "Normal", nil
+		case strings.EqualFold(value, "Warning"):
+			return "Warning", nil
+		}
+		return "", cli.Rejection.Message(
+			"event-type",
+			fmt.Sprintf("expected Normal or Warning, got %q", value),
+			cli.Rejection.At(0, 0, len(value)),
+		)
+	},
+	Format:   func(value string) string { return value },
+	Snapshot: func(value string) string { return value },
+}
+
+var eventSubjectLanguage = cli.ValueCodec[eventSubject]{
+	Name: "kubectl-event-subject",
+	Parse: func(value string) (eventSubject, error) {
+		if value == "" {
+			return eventSubject{}, nil
+		}
+		resource, name, found := strings.Cut(value, "/")
+		if !found || resource == "" {
+			return eventSubject{}, cli.Rejection.Message(
+				"event-subject",
+				"expected resource/name form",
+				cli.Rejection.At(0, 0, len(value)),
+			)
+		}
+		if strings.Contains(name, "/") {
+			return eventSubject{}, cli.Rejection.Message(
+				"event-subject",
+				"resource/name form may not contain more than one slash",
+				cli.Rejection.At(0, 0, len(value)),
+			)
+		}
+		subject := eventSubject{
+			Resource: resource,
+			Name:     name,
+		}
+		return subject, nil
+	},
+	Format: func(value eventSubject) string {
+		if value.Resource == "" {
+			return ""
+		}
+		return value.Resource + "/" + value.Name
+	},
+	Snapshot: func(value eventSubject) eventSubject { return value },
 }

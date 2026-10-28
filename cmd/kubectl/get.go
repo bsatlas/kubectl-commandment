@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/url"
 	"strings"
 
@@ -26,97 +27,43 @@ var outputFormats = []string{
 	"wide",
 }
 
-var parameterizedOutputFormats = map[string]struct{}{
-	"go-template":         {},
-	"go-template-file":    {},
-	"template":            {},
-	"templatefile":        {},
-	"jsonpath":            {},
-	"jsonpath-as-json":    {},
-	"jsonpath-file":       {},
-	"custom-columns":      {},
-	"custom-columns-file": {},
-}
+type getConfig struct {
+	Client clientConfig
 
-func resourceTypeLanguage() cli.ValueCodec[string] {
-	language := cli.ValueCodec[string]{
-		Name: "kubectl-resource-type",
-		Parse: func(value string) (string, error) {
-			if value == "" || strings.Contains(value, "/") {
-				return "", cli.Rejection.Message(
-					"resource-type",
-					fmt.Sprintf("expected resource type, got %q", value),
-					cli.Rejection.At(0, 0, len(value)),
-				)
-			}
-			return value, nil
-		},
-		Format:   func(value string) string { return value },
-		Snapshot: func(value string) string { return value },
-	}
-	return language
-}
+	ResourceType       string
+	Names              []string
+	QualifiedResources []string
 
-func qualifiedResourceLanguage() cli.ValueCodec[string] {
-	language := cli.ValueCodec[string]{
-		Name: "kubectl-qualified-resource",
-		Parse: func(value string) (string, error) {
-			resourceType, name, found := strings.Cut(value, "/")
-			if !found || resourceType == "" || name == "" {
-				return "", cli.Rejection.Message(
-					"qualified-resource",
-					fmt.Sprintf("expected TYPE/NAME, got %q", value),
-					cli.Rejection.At(0, 0, len(value)),
-				)
-			}
-			return value, nil
-		},
-		Format:   func(value string) string { return value },
-		Snapshot: func(value string) string { return value },
-	}
-	return language
-}
+	Output                   string
+	NoHeaders                bool
+	ShowManagedFields        bool
+	Template                 string
+	AllowMissingTemplateKeys bool
+	ShowLabels               bool
+	SortBy                   string
+	LabelColumns             []string
+	ShowKind                 bool
 
-func outputValueLanguage() cli.ValueCodec[string] {
-	language := cli.ValueCodec[string]{
-		Name: "kubectl-output-format",
-		Parse: func(value string) (string, error) {
-			if value == "" {
-				return value, nil
-			}
-			for _, format := range outputFormats {
-				if value == format {
-					return value, nil
-				}
-			}
-			format, payload, found := strings.Cut(value, "=")
-			if _, ok := parameterizedOutputFormats[format]; ok && found && payload != "" {
-				return value, nil
-			}
-			return "", cli.Rejection.Message(
-				"output-format",
-				fmt.Sprintf("unsupported output format %q", value),
-				cli.Rejection.At(0, 0, len(value)),
-			)
-		},
-		Format:   func(value string) string { return value },
-		Snapshot: func(value string) string { return value },
-	}
-	return language
-}
+	Raw                  string
+	Watch                bool
+	WatchOnly            bool
+	OutputWatchEvents    bool
+	IgnoreNotFound       bool
+	FieldSelector        string
+	AllNamespaces        bool
+	ServerPrintRequested bool
+	ServerPrint          bool
+	HumanReadable        bool
+	Filenames            []string
+	Kustomize            string
+	Recursive            bool
+	ChunkSize            int64
+	LabelSelector        string
+	Subresource          string
 
-func completeOutputFormat(_ context.Context, _ *getConfig, _ cli.ValueCompletionRequest) (cli.CompletionContribution, error) {
-	candidates := make([]cli.CompletionCandidate, 0, len(outputFormats))
-	for _, format := range outputFormats {
-		candidates = append(candidates, cli.CompletionCandidate{
-			Value: format,
-			Kind:  cli.CompletionCandidateValue,
-		})
-	}
-	completion := cli.CompletionContribution{
-		Candidates: candidates,
-	}
-	return completion, nil
+	Stdin  io.Reader
+	Stdout io.Writer
+	Stderr io.Writer
 }
 
 func getCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[getConfig] {
@@ -191,9 +138,9 @@ func getCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[ge
 
 			client := deriveClientConfig(cb, &cb.Config.Client, client)
 
-			resourceType := cb.Values.Value(&cb.Config.ResourceType, resourceTypeLanguage())
-			names := cb.Values.Sequence(&cb.Config.Names, cli.Value.String())
-			qualifiedResources := cb.Values.Sequence(&cb.Config.QualifiedResources, qualifiedResourceLanguage())
+			resourceType := cb.Values.Value(&cb.Config.ResourceType, resourceTypeLanguage)
+			names := cb.Values.Sequence(&cb.Config.Names, getResourceNameLanguage)
+			qualifiedResources := cb.Values.Sequence(&cb.Config.QualifiedResources, qualifiedResourceLanguage)
 
 			cb.Arguments.Form(func(_ *cli.ArgumentFormBuilder[getConfig]) {})
 			cb.Arguments.Form(func(form *cli.ArgumentFormBuilder[getConfig]) {
@@ -209,7 +156,7 @@ func getCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[ge
 					CompleteBy(completeQualifiedResource).
 					From(client)
 			})
-			output := cb.Values.Value(&cb.Config.Output, outputValueLanguage())
+			output := cb.Values.Value(&cb.Config.Output, outputValueLanguage)
 			cb.Values.Default(output, "")
 			outputFlag := cb.Flags.ValueFor(output).ValueName("FORMAT")
 			outputFlag.CompleteBy(completeOutputFormat).Long("output")
@@ -237,7 +184,6 @@ func getCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[ge
 
 			labelColumns := cb.Values.Sequence(&cb.Config.LabelColumns, cli.Value.String())
 			labelColumnsFlag := cb.Flags.Sequence(labelColumns).
-				ValuesPerOccurrence(cli.Count.OneOrMore()).
 				DelimitedBy(",").
 				ValueName("LABEL")
 			labelColumnsFlag.Long("label-columns")
@@ -269,14 +215,37 @@ func getCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[ge
 			allNamespaces.Long("all-namespaces").ImplicitValue(true)
 			allNamespaces.Short('A').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
 
-			serverPrint := cb.Values.Bool(&cb.Config.ServerPrint)
-			cb.Values.Default(serverPrint, true)
-			serverPrintFlag := cb.Flags.ValueFor(serverPrint).ValueName("BOOL")
+			serverPrintRequested := cb.Values.Bool(&cb.Config.ServerPrintRequested)
+			cb.Values.Default(serverPrintRequested, true)
+			serverPrintFlag := cb.Flags.ValueFor(serverPrintRequested).ValueName("BOOL")
 			serverPrintFlag.Long("server-print").ImplicitValue(true)
+
+			cb.Values.Derive(&cb.Config.ServerPrint, cli.Value.ComputedBy(func(_ context.Context, _ *getConfig, dependencies cli.Dependencies) (bool, error) {
+				requested, ok := dependencies.Get(serverPrintRequested)
+				if !ok {
+					return false, fmt.Errorf("server-print dependency is unavailable")
+				}
+				format, ok := dependencies.Get(output)
+				if !ok {
+					return false, fmt.Errorf("output dependency is unavailable")
+				}
+				if strings.Contains(format, "custom-columns") || format == "yaml" || strings.Contains(format, "json") {
+					return false, nil
+				}
+				return requested, nil
+			}).From(serverPrintRequested, output))
+
+			cb.Values.Derive(&cb.Config.HumanReadable, cli.Value.ComputedBy(func(_ context.Context, _ *getConfig, dependencies cli.Dependencies) (bool, error) {
+				format, ok := dependencies.Get(output)
+				if !ok {
+					return false, fmt.Errorf("output dependency is unavailable")
+				}
+				templateValue, _ := dependencies.Get(template)
+				return format == "" && templateValue == "" || format == "wide", nil
+			}).From(output, template.OptionalDependency()))
 
 			filenames := cb.Values.Sequence(&cb.Config.Filenames, cli.Value.String())
 			filenameFlag := cb.Flags.Sequence(filenames).
-				ValuesPerOccurrence(cli.Count.OneOrMore()).
 				DelimitedBy(",").
 				ValueName("FILENAME")
 			filenameFlag.Long("filename")
@@ -310,19 +279,58 @@ func getCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[ge
 			cb.Rule.When(rawSelected).Forbid(resourceType)
 			cb.Rule.When(rawSelected).Forbid(names)
 			cb.Rule.When(rawSelected).Forbid(qualifiedResources)
-			cb.Rule.When(rawSelected).Forbid(watch.Destination())
-			cb.Rule.When(rawSelected).Forbid(watchOnly.Destination())
-			cb.Rule.When(rawSelected).Forbid(labelSelector.Destination())
-			cb.Rule.When(cb.Rule.All(rawSelected, cb.Rule.ContributedBy(output, cli.ValueProducerKindFlag))).Forbid(output)
 
 			cb.Rule.When(cb.When.Equal(showLabels.Destination(), true)).In(output, "", "wide")
-			cb.Rule.When(cb.When.Equal(outputWatchEvents.Destination(), true)).AtLeastOne(watch.Destination(), watchOnly.Destination())
-			cb.Rule.AtMostOne(filenames, kustomize.Destination())
-			cb.Rule.When(cb.When.Equal(recursive.Destination(), true)).Forbid(kustomize.Destination())
-			cb.Rule.AtLeastOne(resourceType, qualifiedResources).
-				And(filenames).
-				And(kustomize.Destination()).
-				And(raw.Destination())
+
+			cb.Rule.Check("kubectl-get-raw-options", func(_ context.Context, cfg *getConfig, _ cli.Dependencies) (bool, error) {
+				return cfg.Raw == "" || !cfg.Watch && !cfg.WatchOnly && cfg.LabelSelector == "" && cfg.Output == "", nil
+			}).
+				DependsOn(raw.Destination().OptionalDependency()).
+				DependsOn(watch.Destination().OptionalDependency()).
+				DependsOn(watchOnly.Destination().OptionalDependency()).
+				DependsOn(labelSelector.Destination().OptionalDependency()).
+				DependsOn(output.OptionalDependency())
+
+			cb.Rule.Check("kubectl-get-output-watch-events", func(_ context.Context, cfg *getConfig, _ cli.Dependencies) (bool, error) {
+				return !cfg.OutputWatchEvents || cfg.Watch || cfg.WatchOnly, nil
+			}).
+				DependsOn(outputWatchEvents.Destination().OptionalDependency()).
+				DependsOn(watch.Destination().OptionalDependency()).
+				DependsOn(watchOnly.Destination().OptionalDependency())
+
+			cb.Rule.Check("kubectl-get-output-template", func(_ context.Context, cfg *getConfig, _ cli.Dependencies) (bool, error) {
+				if strings.Contains(cfg.Output, "=") {
+					return cfg.Template == "", nil
+				}
+				return !outputFormatAcceptsArgument(cfg.Output) || cfg.Template != "", nil
+			}).
+				DependsOn(output.OptionalDependency()).
+				DependsOn(template.Destination().OptionalDependency())
+
+			cb.Rule.Check("kubectl-get-input-source", func(_ context.Context, cfg *getConfig, _ cli.Dependencies) (bool, error) {
+				return cfg.Watch || cfg.WatchOnly || cfg.ResourceType != "" || len(cfg.QualifiedResources) > 0 || len(cfg.Filenames) > 0 || cfg.Kustomize != "" || cfg.Raw != "", nil
+			}).
+				DependsOn(resourceType.OptionalDependency()).
+				DependsOn(qualifiedResources.OptionalDependency()).
+				DependsOn(filenames.OptionalDependency()).
+				DependsOn(kustomize.Destination().OptionalDependency()).
+				DependsOn(raw.Destination().OptionalDependency()).
+				DependsOn(watch.Destination().OptionalDependency()).
+				DependsOn(watchOnly.Destination().OptionalDependency())
+
+			cb.Rule.Check("kubectl-get-filename-source", func(_ context.Context, cfg *getConfig, _ cli.Dependencies) (bool, error) {
+				return cfg.Raw != "" || len(cfg.Filenames) == 0 || cfg.Kustomize == "", nil
+			}).
+				DependsOn(raw.Destination().OptionalDependency()).
+				DependsOn(filenames.OptionalDependency()).
+				DependsOn(kustomize.Destination().OptionalDependency())
+
+			cb.Rule.Check("kubectl-get-kustomize-recursive", func(_ context.Context, cfg *getConfig, _ cli.Dependencies) (bool, error) {
+				return cfg.Raw != "" || cfg.Kustomize == "" || !cfg.Recursive, nil
+			}).
+				DependsOn(raw.Destination().OptionalDependency()).
+				DependsOn(kustomize.Destination().OptionalDependency()).
+				DependsOn(recursive.Destination().OptionalDependency())
 
 			cb.Rule.Check("kubectl-get-raw-uri", func(_ context.Context, cfg *getConfig, _ cli.Dependencies) (bool, error) {
 				if cfg.Raw == "" {
@@ -341,4 +349,123 @@ func getCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[ge
 		Run: runGet,
 	}
 	return cmd
+}
+
+var resourceTypeLanguage = cli.ValueCodec[string]{
+	Name: "kubectl-resource-type",
+	Parse: func(value string) (string, error) {
+		if value == "" || strings.Contains(value, "/") {
+			return "", cli.Rejection.Message(
+				"resource-type",
+				fmt.Sprintf("expected resource type, got %q", value),
+				cli.Rejection.At(0, 0, len(value)),
+			)
+		}
+		return value, nil
+	},
+	Format:   func(value string) string { return value },
+	Snapshot: func(value string) string { return value },
+}
+
+var getResourceNameLanguage = cli.ValueCodec[string]{
+	Name: "kubectl-get-resource-name",
+	Parse: func(value string) (string, error) {
+		if strings.Contains(value, "/") {
+			return "", cli.Rejection.Message(
+				"resource-name",
+				fmt.Sprintf("expected resource name, got %q", value),
+				cli.Rejection.At(0, 0, len(value)),
+			)
+		}
+		return value, nil
+	},
+	Format:   func(value string) string { return value },
+	Snapshot: func(value string) string { return value },
+}
+
+var qualifiedResourceLanguage = cli.ValueCodec[string]{
+	Name: "kubectl-qualified-resource",
+	Parse: func(value string) (string, error) {
+		resourceType, name, found := strings.Cut(value, "/")
+		if !found || resourceType == "" || name == "" || strings.Contains(resourceType, ",") || strings.Contains(name, "/") {
+			return "", cli.Rejection.Message(
+				"qualified-resource",
+				fmt.Sprintf("expected TYPE/NAME, got %q", value),
+				cli.Rejection.At(0, 0, len(value)),
+			)
+		}
+		return value, nil
+	},
+	Format:   func(value string) string { return value },
+	Snapshot: func(value string) string { return value },
+}
+
+func outputFormatAcceptsArgument(format string) bool {
+	switch format {
+	case "go-template", "go-template-file", "template", "templatefile", "jsonpath", "jsonpath-as-json", "jsonpath-file", "custom-columns", "custom-columns-file":
+		return true
+	default:
+		return false
+	}
+}
+
+var outputValueLanguage = cli.ValueCodec[string]{
+	Name: "kubectl-output-format",
+	Parse: func(value string) (string, error) {
+		if value == "" {
+			return value, nil
+		}
+		for _, format := range outputFormats {
+			if value == format {
+				return value, nil
+			}
+		}
+		format, payload, found := strings.Cut(value, "=")
+		if found && payload != "" && outputFormatAcceptsArgument(format) {
+			return value, nil
+		}
+		return "", cli.Rejection.Message(
+			"output-format",
+			fmt.Sprintf("unsupported output format %q", value),
+			cli.Rejection.At(0, 0, len(value)),
+		)
+	},
+	Format:   func(value string) string { return value },
+	Snapshot: func(value string) string { return value },
+}
+
+func completeOutputFormat(_ context.Context, _ *getConfig, _ cli.ValueCompletionRequest) (cli.CompletionContribution, error) {
+	candidates := make([]cli.CompletionCandidate, 0, len(outputFormats))
+	for _, format := range outputFormats {
+		candidates = append(candidates, cli.CompletionCandidate{
+			Value: format,
+			Kind:  cli.CompletionCandidateValue,
+		})
+	}
+	completion := cli.CompletionContribution{
+		Candidates: candidates,
+	}
+	return completion, nil
+}
+
+func completeResourceType(_ context.Context, cfg *getConfig, _ cli.ValueCompletionRequest) (cli.CompletionContribution, error) {
+	return completeResourceTypes(restClientGetter(cfg.Client), resourceCompletionBare)
+}
+
+func completeResourceName(resourceType cli.Destination[getConfig, string]) cli.ValueCompleter[getConfig] {
+	return func(ctx context.Context, cfg *getConfig, _ cli.ValueCompletionRequest) (cli.CompletionContribution, error) {
+		state, ok := cli.ValueStateFromContext(ctx, resourceType)
+		if !ok || state.State() != cli.ResolutionStateResolved || cfg.ResourceType == "" {
+			return cli.CompletionContribution{}, nil
+		}
+		return completeResourceNames(ctx, restClientGetter(cfg.Client), cfg.ResourceType, resourceCompletionBare)
+	}
+}
+
+func completeQualifiedResource(ctx context.Context, cfg *getConfig, request cli.ValueCompletionRequest) (cli.CompletionContribution, error) {
+	resourceType, _, found := strings.Cut(request.Text, "/")
+	if !found {
+		return completeResourceTypes(restClientGetter(cfg.Client), resourceCompletionQualified)
+	}
+	return completeResourceNames(ctx, restClientGetter(cfg.Client), resourceType, resourceCompletionQualified)
 }

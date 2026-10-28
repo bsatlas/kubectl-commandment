@@ -1,10 +1,11 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"io"
-	"sort"
+	"slices"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -16,9 +17,6 @@ import (
 )
 
 func runAPIResources(_ context.Context, cfg *apiResourcesConfig) error {
-	if cfg.SortBy != "" && cfg.SortBy != "name" && cfg.SortBy != "kind" {
-		return fmt.Errorf("--sort-by accepts only name or kind")
-	}
 	discoveryClient, err := restClientGetter(cfg.Client).ToDiscoveryClient()
 	if err != nil {
 		return err
@@ -36,11 +34,16 @@ func runAPIResources(_ context.Context, cfg *apiResourcesConfig) error {
 	groupChanged := explicitFlagValue(cfg.APIGroupState)
 	namespacedChanged := explicitFlagValue(cfg.NamespacedState)
 	allResources := make([]v1.APIResource, 0)
+	hasResourceList := false
 	for _, list := range lists {
+		if len(list.APIResources) == 0 {
+			continue
+		}
 		groupVersion, err := schema.ParseGroupVersion(list.GroupVersion)
 		if err != nil {
 			continue
 		}
+		hasResourceList = true
 		for _, resource := range list.APIResources {
 			if len(resource.Verbs) == 0 || groupChanged && cfg.APIGroup != groupVersion.Group || namespacedChanged && cfg.Namespaced != resource.Namespaced {
 				continue
@@ -56,25 +59,22 @@ func runAPIResources(_ context.Context, cfg *apiResourcesConfig) error {
 			allResources = append(allResources, resource)
 		}
 	}
-	if len(allResources) == 0 {
+	if !hasResourceList {
 		return errors.NewAggregate(errList)
 	}
 
-	sort.SliceStable(allResources, func(i, j int) bool {
-		left, right := allResources[i].Group, allResources[j].Group
+	slices.SortStableFunc(allResources, func(left, right v1.APIResource) int {
+		leftKey, rightKey := left.Group, right.Group
 		switch cfg.SortBy {
 		case "name":
-			left, right = allResources[i].Name, allResources[j].Name
+			leftKey, rightKey = left.Name, right.Name
 		case "kind":
-			left, right = allResources[i].Kind, allResources[j].Kind
-		case "":
-		default:
-			return false
+			leftKey, rightKey = left.Kind, right.Kind
 		}
-		if left == right {
-			return allResources[i].Name < allResources[j].Name
+		if order := cmp.Compare(leftKey, rightKey); order != 0 {
+			return order
 		}
-		return left < right
+		return cmp.Compare(left.Name, right.Name)
 	})
 
 	flags := apiresources.NewPrintFlags()
