@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/csv"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 
 	"github.com/abstractionsinc/commandment/cli"
+	"golang.org/x/text/encoding/unicode"
+	"golang.org/x/text/transform"
+	"k8s.io/cli-runtime/pkg/resource"
 )
 
 type filenameOptions struct {
@@ -18,6 +22,30 @@ type filenameOptions struct {
 
 func (options filenameOptions) Filenames() []string {
 	return slices.Concat(options.Groups...)
+}
+
+func addFilenameSources(builder *resource.Builder, enforceNamespace bool, options resource.FilenameOptions, stdin io.Reader) {
+	for _, filename := range options.Filenames {
+		if filename == "-" {
+			decoder := unicode.BOMOverride(unicode.UTF8.NewDecoder())
+			builder.StdinInUse().Stream(transform.NewReader(stdin, decoder), "STDIN")
+			continue
+		}
+		filenameOptions := resource.FilenameOptions{
+			Filenames: []string{filename},
+			Recursive: options.Recursive,
+		}
+		builder.FilenameParam(false, &filenameOptions)
+	}
+	if options.Kustomize != "" {
+		kustomizeOptions := resource.FilenameOptions{
+			Kustomize: options.Kustomize,
+		}
+		builder.FilenameParam(false, &kustomizeOptions)
+	}
+	if enforceNamespace {
+		builder.RequireNamespace()
+	}
 }
 
 type filenameOptionDestinations[C any] struct {

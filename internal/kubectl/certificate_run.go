@@ -46,13 +46,13 @@ func runCertificateDeny(ctx context.Context, cfg *certificateConditionConfig) er
 
 func modifyCertificateCondition(ctx context.Context, cfg *certificateConditionConfig, change certificateConditionChange) error {
 	printFlags := genericclioptions.NewPrintFlags(change.operation).WithTypeSetter(scheme.Scheme)
-	configurePrintFlags(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
+	configurePrintFlagsWithOutputState(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields, cfg.OutputState)
 	printer, err := printFlags.ToPrinter()
 	if err != nil {
 		return err
 	}
 
-	factory := cfg.Client.factory()
+	factory := cfg.Client.factoryForInvocation(ctx)
 	clientset, err := factory.KubernetesClientSet()
 	if err != nil {
 		return err
@@ -64,10 +64,11 @@ func modifyCertificateCondition(ctx context.Context, cfg *certificateConditionCo
 	}
 
 	var found int
-	result := factory.NewBuilder().
+	builder := factory.NewBuilder().
 		Unstructured().
-		ContinueOnError().
-		FilenameParam(false, &filenameOptions).
+		ContinueOnError()
+	addFilenameSources(builder, false, filenameOptions, cfg.Stdin)
+	result := builder.
 		ResourceNames("certificatesigningrequests", cfg.Names...).
 		RequireObject(true).
 		Flatten().
@@ -77,7 +78,7 @@ func modifyCertificateCondition(ctx context.Context, cfg *certificateConditionCo
 		if err != nil {
 			return err
 		}
-		for attempt := 0; ; attempt++ {
+		for attempt := range certificateConditionConflictRetries + 1 {
 			object, ok := info.Object.(*unstructured.Unstructured)
 			if !ok {
 				return fmt.Errorf("expected *unstructured.Unstructured, got %T", info.Object)

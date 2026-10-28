@@ -3,10 +3,11 @@ package kubectl
 import "github.com/abstractionsinc/commandment/cli"
 
 func explicitFlagValue(state cli.OptionalValue[cli.ValueState]) bool {
-	if !state.Present {
-		return false
-	}
-	for _, producer := range state.Value.Producers() {
+	return state.Present && explicitFlagState(state.Value)
+}
+
+func explicitFlagState(state cli.ValueState) bool {
+	for _, producer := range state.Producers() {
 		if producer.Kind == cli.ValueProducerKindFlag && producer.Tier == cli.ResolutionTierExplicit && producer.Outcome == cli.ValueProducerOutcomeContributed {
 			return true
 		}

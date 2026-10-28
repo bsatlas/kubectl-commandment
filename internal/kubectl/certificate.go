@@ -8,6 +8,7 @@ import (
 
 type certificateConditionConfig struct {
 	Client clientConfig
+	Stdin  io.Reader
 	Stdout io.Writer
 
 	Names                    []string
@@ -16,6 +17,7 @@ type certificateConditionConfig struct {
 	Force                    bool
 	Kustomize                string
 	Output                   string
+	OutputState              cli.OptionalValue[cli.ValueState]
 	Recursive                bool
 	ShowManagedFields        bool
 	Template                 string
@@ -82,6 +84,7 @@ func certificateDenyCommand(client cli.Destination[rootConfig, clientConfig]) cl
 
 func declareCertificateConditionCommand(cb *cli.CommandBuilder[certificateConditionConfig], client cli.Destination[rootConfig, clientConfig], forceDescription string) {
 	cb.Access.Value(client, &cb.Config.Client)
+	cb.Access.Stdin(&cb.Config.Stdin)
 	cb.Access.Stdout(&cb.Config.Stdout)
 
 	names := cb.Values.Sequence(&cb.Config.Names, cli.Value.String())
@@ -89,13 +92,6 @@ func declareCertificateConditionCommand(cb *cli.CommandBuilder[certificateCondit
 	cb.Arguments.Form(func(form *cli.ArgumentFormBuilder[certificateConditionConfig]) {
 		form.Sequence(names, "NAME", cli.Count.OneOrMore())
 	})
-
-	allowMissingTemplateKeys := cb.Values.Bool(&cb.Config.AllowMissingTemplateKeys)
-	cb.Values.Default(allowMissingTemplateKeys, true)
-	cb.Flags.ValueFor(allowMissingTemplateKeys).
-		Description("If true, ignore any errors in templates when a field or map key is missing in the template. Only applies to golang and jsonpath output formats.").
-		Long("allow-missing-template-keys").
-		ImplicitValue(true)
 
 	filename := cb.Values.Sequence(&cb.Config.Filename, cli.Value.String())
 	filenameFlag := cb.Flags.Sequence(filename).
@@ -115,25 +111,20 @@ func declareCertificateConditionCommand(cb *cli.CommandBuilder[certificateCondit
 	kustomizeFlag.Long("kustomize")
 	kustomizeFlag.Short('k')
 
-	outputFlag := cb.Flags.String(&cb.Config.Output).
-		Description("Output format. One of: (json, yaml, kyaml, name, go-template, go-template-file, template, templatefile, jsonpath, jsonpath-as-json, jsonpath-file).")
-	outputFlag.Long("output")
-	outputFlag.Short('o')
+	declarePrintFlags(
+		cb,
+		&cb.Config.Output,
+		&cb.Config.OutputState,
+		&cb.Config.Template,
+		&cb.Config.AllowMissingTemplateKeys,
+		&cb.Config.ShowManagedFields,
+	)
 
 	recursive := cb.Values.Bool(&cb.Config.Recursive)
 	recursiveFlag := cb.Flags.ValueFor(recursive).
 		Description("Process the directory used in -f, --filename recursively.")
 	recursiveFlag.Long("recursive").ImplicitValue(true)
 	recursiveFlag.Short('R').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
-
-	cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowManagedFields)).
-		Description("If true, keep the managedFields when printing objects in JSON or YAML format.").
-		Long("show-managed-fields").
-		ImplicitValue(true)
-
-	cb.Flags.String(&cb.Config.Template).
-		Description("Template string or path to template file to use when -o=go-template, -o=go-template-file.").
-		Long("template")
 
 	cb.Rule.ExactlyOne(names, filename).And(kustomize)
 	cb.Rule.When(cb.When.Equal(recursive, true)).Forbid(kustomize)

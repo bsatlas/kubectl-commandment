@@ -31,6 +31,7 @@ type authCanIConfig struct {
 
 type authReconcileConfig struct {
 	Client clientConfig
+	Stdin  io.Reader
 	Stdout io.Writer
 	Stderr io.Writer
 
@@ -39,6 +40,7 @@ type authReconcileConfig struct {
 	Filename                 []string
 	Kustomize                string
 	Output                   string
+	OutputState              cli.OptionalValue[cli.ValueState]
 	Recursive                bool
 	RemoveExtraPermissions   bool
 	RemoveExtraSubjects      bool
@@ -83,22 +85,6 @@ var authCanITargetLanguage = cli.ValueCodec[authCanITarget]{
 		return value.Resource
 	},
 	Snapshot: cli.Value.Assign[authCanITarget](),
-}
-
-var authReconcileDryRunLanguage = cli.ValueCodec[util.DryRunStrategy]{
-	Name:  "kubectl-dry-run-strategy",
-	Parse: dryRunStrategy,
-	Format: func(value util.DryRunStrategy) string {
-		switch value {
-		case util.DryRunClient:
-			return "client"
-		case util.DryRunServer:
-			return "server"
-		default:
-			return "none"
-		}
-	},
-	Snapshot: cli.Value.Assign[util.DryRunStrategy](),
 }
 
 func authCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[struct{}] {
@@ -243,17 +229,11 @@ func authReconcileCommand(client cli.Destination[rootConfig, clientConfig]) cli.
 		},
 		Declare: func(cb *cli.CommandBuilder[authReconcileConfig]) {
 			cb.Access.Value(client, &cb.Config.Client)
+			cb.Access.Stdin(&cb.Config.Stdin)
 			cb.Access.Stdout(&cb.Config.Stdout)
 			cb.Access.Stderr(&cb.Config.Stderr)
 
-			allowMissingTemplateKeys := cb.Values.Bool(&cb.Config.AllowMissingTemplateKeys)
-			cb.Values.Default(allowMissingTemplateKeys, true)
-			cb.Flags.ValueFor(allowMissingTemplateKeys).
-				Description("If true, ignore any errors in templates when a field or map key is missing in the template. Only applies to golang and jsonpath output formats.").
-				Long("allow-missing-template-keys").
-				ImplicitValue(true)
-
-			dryRun := cb.Values.Value(&cb.Config.DryRun, authReconcileDryRunLanguage)
+			dryRun := cb.Values.Value(&cb.Config.DryRun, dryRunValueLanguage)
 			cb.Values.Default(dryRun, util.DryRunNone)
 			cb.Flags.ValueFor(dryRun).
 				Description("Must be \"none\" or \"client\". If client strategy, only print the object that would be sent, without sending it.").
@@ -274,11 +254,14 @@ func authReconcileCommand(client cli.Destination[rootConfig, clientConfig]) cli.
 			kustomizeFlag.Long("kustomize")
 			kustomizeFlag.Short('k')
 
-			output := cb.Values.String(&cb.Config.Output)
-			outputFlag := cb.Flags.ValueFor(output).
-				Description("Output format. One of: (json, yaml, kyaml, name, go-template, go-template-file, template, templatefile, jsonpath, jsonpath-as-json, jsonpath-file).")
-			outputFlag.Long("output")
-			outputFlag.Short('o')
+			declarePrintFlags(
+				cb,
+				&cb.Config.Output,
+				&cb.Config.OutputState,
+				&cb.Config.Template,
+				&cb.Config.AllowMissingTemplateKeys,
+				&cb.Config.ShowManagedFields,
+			)
 
 			recursive := cb.Values.Bool(&cb.Config.Recursive)
 			recursiveFlag := cb.Flags.ValueFor(recursive).
@@ -295,15 +278,6 @@ func authReconcileCommand(client cli.Destination[rootConfig, clientConfig]) cli.
 				Description("If true, removes extra subjects added to rolebindings").
 				Long("remove-extra-subjects").
 				ImplicitValue(true)
-
-			cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowManagedFields)).
-				Description("If true, keep the managedFields when printing objects in JSON or YAML format.").
-				Long("show-managed-fields").
-				ImplicitValue(true)
-
-			cb.Flags.String(&cb.Config.Template).
-				Description("Template string or path to template file to use when -o=go-template, -o=go-template-file. The template format is golang templates [http://golang.org/pkg/text/template/#pkg-overview].").
-				Long("template")
 
 			cb.Rule.ExactlyOne(filename, kustomize)
 			cb.Rule.When(cb.When.Equal(recursive, true)).Forbid(kustomize)
@@ -334,28 +308,14 @@ func authWhoAmICommand(client cli.Destination[rootConfig, clientConfig]) cli.Com
 			cb.Access.Value(client, &cb.Config.Client)
 			cb.Access.Stdout(&cb.Config.Stdout)
 
-			allowMissing := cb.Values.Bool(&cb.Config.AllowMissingTemplateKeys)
-			cb.Values.Default(allowMissing, true)
-			cb.Flags.ValueFor(allowMissing).
-				Description("If true, ignore any errors in templates when a field or map key is missing in the template. Only applies to golang and jsonpath output formats.").
-				Long("allow-missing-template-keys").
-				ImplicitValue(true)
-
-			output := cb.Values.String(&cb.Config.Output)
-			outputFlag := cb.Flags.ValueFor(output).
-				Description("Output format. One of: (json, yaml, kyaml, name, go-template, go-template-file, template, templatefile, jsonpath, jsonpath-as-json, jsonpath-file).")
-			outputFlag.Long("output")
-			outputFlag.Short('o')
-			cb.Access.ValueState(output, &cb.Config.OutputState)
-
-			cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowManagedFields)).
-				Description("If true, keep the managedFields when printing objects in JSON or YAML format.").
-				Long("show-managed-fields").
-				ImplicitValue(true)
-
-			cb.Flags.String(&cb.Config.Template).
-				Description("Template string or path to template file to use when -o=go-template, -o=go-template-file. The template format is golang templates [http://golang.org/pkg/text/template/#pkg-overview].").
-				Long("template")
+			declarePrintFlags(
+				cb,
+				&cb.Config.Output,
+				&cb.Config.OutputState,
+				&cb.Config.Template,
+				&cb.Config.AllowMissingTemplateKeys,
+				&cb.Config.ShowManagedFields,
+			)
 		},
 		Run: runAuthWhoAmI,
 	}

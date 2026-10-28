@@ -63,9 +63,12 @@ func printOutputAcceptsArgument(format string) bool {
 	}
 }
 
-func validPrintOutputTemplate(output, template string) bool {
+func validPrintOutputTemplate(output, template string, outputSpecified bool) bool {
 	if strings.Contains(output, "=") {
 		return template == ""
+	}
+	if output == "" {
+		return !outputSpecified
 	}
 	return !printOutputAcceptsArgument(output) || template != ""
 }
@@ -98,10 +101,26 @@ func declarePrintFlags[C any](
 		Long("show-managed-fields").
 		ImplicitValue(true)
 
-	cb.Flags.String(template).
+	templateValue := cb.Values.String(template)
+	templateFlag := cb.Flags.ValueFor(templateValue).
 		Description("Template string or path to template file to use when -o=go-template, -o=go-template-file. The template format is golang templates [http://golang.org/pkg/text/template/#pkg-overview].").
-		CompleteWith(cli.CompletionNativeFiles).
-		Long("template")
+		CompleteWith(cli.CompletionNativeFiles)
+	templateFlag.Long("template")
+
+	declarePrintOutputTemplateRule(cb, outputFlag, templateFlag)
+}
+
+func declarePrintOutputTemplateRule[C any](cb *cli.CommandBuilder[C], output, template cli.FlagDeclaration[C, string]) {
+	cb.Rule.Check("kubectl-print-output-template", func(ctx context.Context, _ *C, dependencies cli.Dependencies) (bool, error) {
+		outputValue, _ := dependencies.Get(output)
+		templateValue, _ := dependencies.Get(template)
+		state, ok := cli.ValueStateFromContext(ctx, output)
+		return validPrintOutputTemplate(outputValue, templateValue, ok && explicitFlagState(state)), nil
+	}).
+		Subject(output).
+		Subject(template).
+		DependsOn(output.OptionalDependency()).
+		DependsOn(template.OptionalDependency())
 }
 
 func completePrintOutputFormat[C any](_ context.Context, _ *C, request cli.ValueCompletionRequest) (cli.CompletionContribution, error) {

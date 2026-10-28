@@ -3,9 +3,13 @@ package kubectl
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"sync"
 
 	"github.com/abstractionsinc/commandment/cli"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/client-go/rest"
 	"k8s.io/kubectl/pkg/cmd/util"
 )
 
@@ -45,6 +49,23 @@ func deriveClientConfig[C any](command *cli.CommandBuilder[C], storage *clientCo
 }
 
 func restClientGetter(selection clientConfig) genericclioptions.RESTClientGetter {
+	return newClientConfigFlags(selection)
+}
+
+func restClientGetterForInvocation(ctx context.Context, selection clientConfig) genericclioptions.RESTClientGetter {
+	flags := newClientConfigFlags(selection)
+	return flags.WithWrapConfigFn(func(config *rest.Config) *rest.Config {
+		config.Wrap(func(next http.RoundTripper) http.RoundTripper {
+			return &invocationRoundTripper{
+				ctx:  ctx,
+				next: next,
+			}
+		})
+		return config
+	})
+}
+
+func newClientConfigFlags(selection clientConfig) *genericclioptions.ConfigFlags {
 	flags := genericclioptions.NewConfigFlags(true).
 		WithDeprecatedPasswordFlag().
 		WithDiscoveryBurst(300).
@@ -76,4 +97,67 @@ func restClientGetter(selection clientConfig) genericclioptions.RESTClientGetter
 
 func (config clientConfig) factory() util.Factory {
 	return util.NewFactory(restClientGetter(config))
+}
+
+func (config clientConfig) factoryForInvocation(ctx context.Context) util.Factory {
+	return util.NewFactory(restClientGetterForInvocation(ctx, config))
+}
+
+type invocationRoundTripper struct {
+	ctx  context.Context
+	next http.RoundTripper
+}
+
+func (transport *invocationRoundTripper) WrappedRoundTripper() http.RoundTripper {
+	return transport.next
+}
+
+func (transport *invocationRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	if cause := context.Cause(transport.ctx); cause != nil {
+		return nil, cause
+	}
+	requestContext, cancel := context.WithCancelCause(request.Context())
+	stop := context.AfterFunc(transport.ctx, func() {
+		cancel(context.Cause(transport.ctx))
+	})
+
+	response, err := transport.next.RoundTrip(request.WithContext(requestContext))
+	if err != nil {
+		stop()
+		cancel(nil)
+		return nil, err
+	}
+
+	finish := sync.OnceFunc(func() {
+		stop()
+		cancel(nil)
+	})
+	if response.Body == nil {
+		finish()
+		return response, nil
+	}
+	response.Body = &invocationResponseBody{
+		ReadCloser: response.Body,
+		finish:     finish,
+	}
+	return response, nil
+}
+
+type invocationResponseBody struct {
+	io.ReadCloser
+	finish func()
+}
+
+func (body *invocationResponseBody) Read(buffer []byte) (int, error) {
+	count, err := body.ReadCloser.Read(buffer)
+	if err != nil {
+		body.finish()
+	}
+	return count, err
+}
+
+func (body *invocationResponseBody) Close() error {
+	err := body.ReadCloser.Close()
+	body.finish()
+	return err
 }

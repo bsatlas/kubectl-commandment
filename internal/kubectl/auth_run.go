@@ -17,8 +17,8 @@ import (
 	"k8s.io/kubectl/pkg/scheme"
 )
 
-func runAuthCanI(_ context.Context, cfg *authCanIConfig) error {
-	factory := cfg.Client.factory()
+func runAuthCanI(ctx context.Context, cfg *authCanIConfig) error {
+	factory := cfg.Client.factoryForInvocation(ctx)
 	streams := genericiooptions.IOStreams{
 		Out:    cfg.Stdout,
 		ErrOut: cfg.Stderr,
@@ -175,9 +175,10 @@ func resolveAuthCanIResource(mapper meta.RESTMapper, resourceArg string, warning
 	return fallback
 }
 
-func runAuthReconcile(_ context.Context, cfg *authReconcileConfig) error {
-	factory := cfg.Client.factory()
+func runAuthReconcile(ctx context.Context, cfg *authReconcileConfig) error {
+	factory := cfg.Client.factoryForInvocation(ctx)
 	streams := genericiooptions.IOStreams{
+		In:     cfg.Stdin,
 		Out:    cfg.Stdout,
 		ErrOut: cfg.Stderr,
 	}
@@ -195,11 +196,12 @@ func runAuthReconcile(_ context.Context, cfg *authReconcileConfig) error {
 	if err != nil {
 		return err
 	}
-	result := factory.NewBuilder().
+	builder := factory.NewBuilder().
 		WithScheme(scheme.Scheme, scheme.Scheme.PrioritizedVersionsAllGroups()...).
 		ContinueOnError().
-		NamespaceParam(namespace).DefaultNamespace().
-		FilenameParam(enforceNamespace, options.FilenameOptions).
+		NamespaceParam(namespace).DefaultNamespace()
+	addFilenameSources(builder, enforceNamespace, *options.FilenameOptions, cfg.Stdin)
+	result := builder.
 		Flatten().
 		Local().
 		Do()
@@ -218,7 +220,7 @@ func runAuthReconcile(_ context.Context, cfg *authReconcileConfig) error {
 			return err
 		}
 	}
-	configurePrintFlags(options.PrintFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
+	configurePrintFlagsWithOutputState(options.PrintFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields, cfg.OutputState)
 	printer, err := options.PrintFlags.ToPrinter()
 	if err != nil {
 		return err
@@ -234,12 +236,8 @@ func runAuthWhoAmI(ctx context.Context, cfg *authWhoAmIConfig) error {
 	streams := genericiooptions.IOStreams{
 		Out: cfg.Stdout,
 	}
-	flags := auth.NewWhoAmIFlags(restClientGetter(cfg.Client), streams)
-	*flags.PrintFlags.OutputFormat = cfg.Output
-	flags.PrintFlags.OutputFlagSpecified = func() bool { return flagProvided(cfg.OutputState) }
-	flags.PrintFlags.JSONYamlPrintFlags.ShowManagedFields = cfg.ShowManagedFields
-	*flags.PrintFlags.TemplatePrinterFlags.TemplateArgument = cfg.Template
-	*flags.PrintFlags.TemplatePrinterFlags.AllowMissingKeys = cfg.AllowMissingTemplateKeys
+	flags := auth.NewWhoAmIFlags(restClientGetterForInvocation(ctx, cfg.Client), streams)
+	configurePrintFlagsWithOutputState(flags.PrintFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields, cfg.OutputState)
 	options, err := flags.ToOptions(ctx, nil)
 	if err != nil {
 		return err
