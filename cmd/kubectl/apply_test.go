@@ -31,8 +31,56 @@ func TestApplyDeclaresSourceAndPolicyRelationships(t *testing.T) {
 			rejected: true,
 		},
 		{
+			name:     "recursive kustomize conflict",
+			args:     []string{"apply", "-k", "overlay", "-R"},
+			rejected: true,
+		},
+		{
 			name:     "force conflicts requires server side",
 			args:     []string{"apply", "-f", "object.yaml", "--force-conflicts"},
+			rejected: true,
+		},
+		{
+			name: "force conflicts with server side",
+			args: []string{"apply", "-f", "object.yaml", "--server-side", "--force-conflicts"},
+		},
+		{
+			name:     "server side forbids force",
+			args:     []string{"apply", "-f", "object.yaml", "--server-side", "--force"},
+			rejected: true,
+		},
+		{
+			name:     "all conflicts with selector",
+			args:     []string{"apply", "-f", "object.yaml", "--all", "--selector=app=web"},
+			rejected: true,
+		},
+		{
+			name:     "subresource requires server side",
+			args:     []string{"apply", "-f", "object.yaml", "--subresource=status"},
+			rejected: true,
+		},
+		{
+			name: "subresource with server side",
+			args: []string{"apply", "-f", "object.yaml", "--server-side", "--subresource=status"},
+		},
+		{
+			name:     "client dry run conflicts with server side",
+			args:     []string{"apply", "-f", "object.yaml", "--dry-run=client", "--server-side"},
+			rejected: true,
+		},
+		{
+			name:     "server dry run forbids force",
+			args:     []string{"apply", "-f", "object.yaml", "--dry-run=server", "--force"},
+			rejected: true,
+		},
+		{
+			name:     "prune forbids force",
+			args:     []string{"apply", "-f", "object.yaml", "--prune", "--all", "--force"},
+			rejected: true,
+		},
+		{
+			name:     "server-side prune requires applyset",
+			args:     []string{"apply", "-f", "object.yaml", "--prune", "--all", "--server-side"},
 			rejected: true,
 		},
 		{
@@ -43,6 +91,10 @@ func TestApplyDeclaresSourceAndPolicyRelationships(t *testing.T) {
 		{
 			name: "prune with all",
 			args: []string{"apply", "-f", "object.yaml", "--prune", "--all"},
+		},
+		{
+			name: "prune with selector",
+			args: []string{"apply", "-f", "object.yaml", "--prune", "--selector=app=web"},
 		},
 		{
 			name:     "applyset unavailable without feature environment",
@@ -68,6 +120,39 @@ func TestApplyDeclaresSourceAndPolicyRelationships(t *testing.T) {
 					Value: "true",
 				},
 			},
+		},
+		{
+			name: "applyset conflicts with all",
+			args: []string{"apply", "-f", "object.yaml", "--prune", "--applyset=example", "--all"},
+			env: cli.Env{
+				{
+					Name:  "KUBECTL_APPLYSET",
+					Value: "true",
+				},
+			},
+			rejected: true,
+		},
+		{
+			name: "applyset conflicts with selector",
+			args: []string{"apply", "-f", "object.yaml", "--prune", "--applyset=example", "--selector=app=web"},
+			env: cli.Env{
+				{
+					Name:  "KUBECTL_APPLYSET",
+					Value: "true",
+				},
+			},
+			rejected: true,
+		},
+		{
+			name: "applyset forbids prune allowlist",
+			args: []string{"apply", "-f", "object.yaml", "--prune", "--applyset=example", "--prune-allowlist=core/v1/ConfigMap"},
+			env: cli.Env{
+				{
+					Name:  "KUBECTL_APPLYSET",
+					Value: "true",
+				},
+			},
+			rejected: true,
 		},
 		{
 			name: "applyset still requires prune",

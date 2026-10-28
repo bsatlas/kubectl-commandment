@@ -11,10 +11,17 @@ func TestApplySetLastAppliedRequiresFilename(t *testing.T) {
 	t.Parallel()
 
 	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
-	readyRequest := cli.InspectionRequest{
-		Args: []string{"apply", "set-last-applied", "-f", "object.yaml"},
+	readyRequests := []cli.InspectionRequest{
+		{
+			Args: []string{"apply", "set-last-applied", "-f", "object.yaml"},
+		},
+		{
+			Args: []string{"apply", "set-last-applied", "-f", "one.yaml", "-f", "two.yaml"},
+		},
 	}
-	clitest.Inspect(t.Context(), app, readyRequest).Require(t, clitest.InspectionReady())
+	for _, request := range readyRequests {
+		clitest.Inspect(t.Context(), app, request).Require(t, clitest.InspectionReady())
+	}
 
 	rejectedRequest := cli.InspectionRequest{
 		Args: []string{"apply", "set-last-applied"},

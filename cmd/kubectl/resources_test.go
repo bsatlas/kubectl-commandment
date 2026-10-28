@@ -35,8 +35,41 @@ func TestSetResourcesDeclaresSourceAndResourceListSemantics(t *testing.T) {
 			rejected: true,
 		},
 		{
+			name:     "source required",
+			args:     []string{"set", "resources", "--limits=cpu=200m"},
+			rejected: true,
+		},
+		{
+			name: "kustomize source",
+			args: []string{"set", "resources", "-k", "overlay", "--limits=cpu=200m"},
+		},
+		{
+			name:     "filename and kustomize conflict",
+			args:     []string{"set", "resources", "-f", "object.yaml", "-k", "overlay", "--limits=cpu=200m"},
+			rejected: true,
+		},
+		{
+			name:     "recursive kustomize conflict",
+			args:     []string{"set", "resources", "deployment/nginx", "-k", "overlay", "-R", "--limits=cpu=200m"},
+			rejected: true,
+		},
+		{
+			name:     "all conflicts with selector",
+			args:     []string{"set", "resources", "deployment", "--limits=cpu=200m", "--all", "--selector=app=web"},
+			rejected: true,
+		},
+		{
 			name:     "local forbids resource arguments",
 			args:     []string{"set", "resources", "deployment/nginx", "--limits=cpu=200m", "--local"},
+			rejected: true,
+		},
+		{
+			name: "local filename source",
+			args: []string{"set", "resources", "-f", "object.yaml", "--limits=cpu=200m", "--local"},
+		},
+		{
+			name:     "local conflicts with server dry run",
+			args:     []string{"set", "resources", "-f", "object.yaml", "--limits=cpu=200m", "--local", "--dry-run=server"},
 			rejected: true,
 		},
 	}

@@ -28,7 +28,7 @@ func runSetSubject(_ context.Context, cfg *setSubjectConfig) error {
 		return err
 	}
 	filename := resource.FilenameOptions{
-		Filenames: append([]string(nil), cfg.Filename...),
+		Filenames: slices.Clone(cfg.Filename),
 		Kustomize: cfg.Kustomize,
 		Recursive: cfg.Recursive,
 	}
@@ -40,7 +40,7 @@ func runSetSubject(_ context.Context, cfg *setSubjectConfig) error {
 		FilenameParam(enforceNamespace, &filename).
 		Flatten()
 	if !cfg.Local {
-		builder = builder.LabelSelectorParam(cfg.Selector).ResourceTypeOrNameArgs(cfg.All, cfg.Resources...).Latest()
+		builder.LabelSelectorParam(cfg.Selector).ResourceTypeOrNameArgs(cfg.All, cfg.Resources...).Latest()
 	}
 	infos, err := builder.Do().Infos()
 	if err != nil {

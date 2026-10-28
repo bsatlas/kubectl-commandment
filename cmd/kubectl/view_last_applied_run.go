@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	"k8s.io/cli-runtime/pkg/resource"
 	"k8s.io/kubectl/pkg/util"
@@ -18,7 +19,7 @@ func runApplyViewLastApplied(_ context.Context, cfg *applyViewLastAppliedConfig)
 		return err
 	}
 	filenameOptions := resource.FilenameOptions{
-		Filenames: append([]string(nil), cfg.Filename...),
+		Filenames: slices.Clone(cfg.Filename),
 		Kustomize: cfg.Kustomize,
 		Recursive: cfg.Recursive,
 	}

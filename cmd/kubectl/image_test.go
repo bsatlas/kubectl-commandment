@@ -43,13 +43,46 @@ func TestSetImageDeclaresSourceAndWildcardRelationships(t *testing.T) {
 			rejected: true,
 		},
 		{
+			name: "wildcard image alone",
+			args: []string{"set", "image", "deployment/nginx", "*=nginx:latest"},
+		},
+		{
 			name:     "wildcard image is exclusive",
 			args:     []string{"set", "image", "deployment/nginx", "*=nginx:latest", "sidecar=busybox"},
 			rejected: true,
 		},
 		{
+			name:     "image update required",
+			args:     []string{"set", "image", "deployment/nginx"},
+			rejected: true,
+		},
+		{
+			name:     "filename and kustomize conflict",
+			args:     []string{"set", "image", "-f", "object.yaml", "-k", "overlay", "web=nginx:latest"},
+			rejected: true,
+		},
+		{
+			name:     "recursive kustomize conflict",
+			args:     []string{"set", "image", "deployment/nginx", "web=nginx:latest", "-k", "overlay", "-R"},
+			rejected: true,
+		},
+		{
+			name:     "all conflicts with selector",
+			args:     []string{"set", "image", "deployment", "web=nginx:latest", "--all", "--selector=app=web"},
+			rejected: true,
+		},
+		{
 			name:     "local forbids resource arguments",
 			args:     []string{"set", "image", "deployment/nginx", "web=nginx:latest", "--local"},
+			rejected: true,
+		},
+		{
+			name: "local filename source",
+			args: []string{"set", "image", "-f", "object.yaml", "web=nginx:latest", "--local"},
+		},
+		{
+			name:     "local conflicts with server dry run",
+			args:     []string{"set", "image", "-f", "object.yaml", "web=nginx:latest", "--local", "--dry-run=server"},
 			rejected: true,
 		},
 	}

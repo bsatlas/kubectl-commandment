@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"slices"
 
 	"sigs.k8s.io/kustomize/api/krusty"
 	"sigs.k8s.io/kustomize/api/types"
@@ -26,8 +27,8 @@ func runKustomize(_ context.Context, cfg *kustomizeConfig) error {
 	functionOptions := types.FnPluginLoadingOptions{
 		Network:       cfg.Network,
 		NetworkName:   cfg.NetworkName,
-		Mounts:        append([]string(nil), cfg.Mount...),
-		Env:           append([]string(nil), cfg.Env...),
+		Mounts:        slices.Clone(cfg.Mount),
+		Env:           slices.Clone(cfg.Env),
 		AsCurrentUser: cfg.AsCurrentUser,
 	}
 	if cfg.EnableAlphaPlugins {
@@ -38,7 +39,7 @@ func runKustomize(_ context.Context, cfg *kustomizeConfig) error {
 		options.PluginConfig.HelmConfig.Enabled = cfg.EnableHelm
 	}
 	options.PluginConfig.HelmConfig.Command = cfg.HelmCommand
-	options.PluginConfig.HelmConfig.ApiVersions = append([]string(nil), cfg.HelmAPIVersions...)
+	options.PluginConfig.HelmConfig.ApiVersions = slices.Clone(cfg.HelmAPIVersions)
 	options.PluginConfig.HelmConfig.KubeVersion = cfg.HelmKubeVersion
 	options.PluginConfig.HelmConfig.Debug = cfg.HelmDebug
 	options.AddManagedbyLabel = cfg.EnableManagedbyLabel || cfg.ManagedbyLabelEnv

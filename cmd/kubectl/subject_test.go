@@ -49,8 +49,35 @@ func TestSetSubjectDeclaresSourceSubjectAndServiceAccountSemantics(t *testing.T)
 			args: []string{"set", "subject", "rolebinding/admin", "--serviceaccount=:builder"},
 		},
 		{
+			name: "role binding permits explicit namespace",
+			args: []string{"set", "subject", "rolebinding/admin", "--serviceaccount=default:builder"},
+		},
+		{
+			name: "kustomize source",
+			args: []string{"set", "subject", "-k", "overlay", "--user=alice"},
+		},
+		{
+			name:     "filename and kustomize conflict",
+			args:     []string{"set", "subject", "-f", "binding.yaml", "-k", "overlay", "--user=alice"},
+			rejected: true,
+		},
+		{
+			name:     "recursive kustomize conflict",
+			args:     []string{"set", "subject", "rolebinding/admin", "-k", "overlay", "-R", "--user=alice"},
+			rejected: true,
+		},
+		{
 			name:     "local forbids resource arguments",
 			args:     []string{"set", "subject", "rolebinding/admin", "--user=alice", "--local"},
+			rejected: true,
+		},
+		{
+			name: "local filename source",
+			args: []string{"set", "subject", "-f", "binding.yaml", "--user=alice", "--local"},
+		},
+		{
+			name:     "local conflicts with server dry run",
+			args:     []string{"set", "subject", "-f", "binding.yaml", "--user=alice", "--local", "--dry-run=server"},
 			rejected: true,
 		},
 		{

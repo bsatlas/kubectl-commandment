@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -26,7 +27,7 @@ func runSetServiceAccount(_ context.Context, cfg *setServiceAccountConfig) error
 		return err
 	}
 	filename := resource.FilenameOptions{
-		Filenames: append([]string(nil), cfg.Filename...),
+		Filenames: slices.Clone(cfg.Filename),
 		Kustomize: cfg.Kustomize,
 		Recursive: cfg.Recursive,
 	}
@@ -38,7 +39,7 @@ func runSetServiceAccount(_ context.Context, cfg *setServiceAccountConfig) error
 		FilenameParam(enforceNamespace, &filename).
 		Flatten()
 	if !cfg.Local {
-		builder = builder.ResourceTypeOrNameArgs(cfg.All, cfg.Resources...).Latest()
+		builder.ResourceTypeOrNameArgs(cfg.All, cfg.Resources...).Latest()
 	}
 	infos, err := builder.Do().Infos()
 	if err != nil {

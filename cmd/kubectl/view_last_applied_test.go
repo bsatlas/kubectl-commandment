@@ -25,6 +25,10 @@ func TestApplyViewLastAppliedDeclaresSourceAndOutputDomain(t *testing.T) {
 			args: []string{"apply", "view-last-applied", "-f", "object.yaml", "-o", "json"},
 		},
 		{
+			name: "kustomize source",
+			args: []string{"apply", "view-last-applied", "-k", "overlay"},
+		},
+		{
 			name:     "source required",
 			args:     []string{"apply", "view-last-applied"},
 			rejected: true,
@@ -32,6 +36,11 @@ func TestApplyViewLastAppliedDeclaresSourceAndOutputDomain(t *testing.T) {
 		{
 			name:     "filename and kustomize conflict",
 			args:     []string{"apply", "view-last-applied", "-f", "object.yaml", "-k", "overlay"},
+			rejected: true,
+		},
+		{
+			name:     "recursive kustomize conflict",
+			args:     []string{"apply", "view-last-applied", "-k", "overlay", "-R"},
 			rejected: true,
 		},
 		{

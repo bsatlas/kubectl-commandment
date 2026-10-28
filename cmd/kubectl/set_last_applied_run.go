@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"slices"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -29,7 +30,7 @@ func runApplySetLastApplied(_ context.Context, cfg *applySetLastAppliedConfig) e
 		return err
 	}
 	filenameOptions := resource.FilenameOptions{
-		Filenames: append([]string(nil), cfg.Filename...),
+		Filenames: slices.Clone(cfg.Filename),
 	}
 	result := factory.NewBuilder().
 		Unstructured().
@@ -41,7 +42,7 @@ func runApplySetLastApplied(_ context.Context, cfg *applySetLastAppliedConfig) e
 		return err
 	}
 
-	patches := make([]lastAppliedPatch, 0)
+	var patches []lastAppliedPatch
 	if err := result.Visit(func(info *resource.Info, err error) error {
 		if err != nil {
 			return err

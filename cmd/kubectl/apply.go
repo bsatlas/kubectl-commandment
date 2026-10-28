@@ -105,30 +105,30 @@ func applyCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[
 			subresource := cb.Values.String(&cb.Config.Subresource)
 
 			allFlag := cb.Flags.ValueFor(all)
-			allFlag = allFlag.Description("Select all resources in the namespace of the specified resource types.")
+			allFlag.Description("Select all resources in the namespace of the specified resource types.")
 			allFlag.Long("all").ImplicitValue(true)
 
 			applySet := cb.Values.String(&cb.Config.ApplySet)
 			applySetEnabled := cb.Values.Value(&cb.Config.ApplySetEnabled, applySetFeatureLanguage)
 			cb.Values.Environment(applySetEnabled, string(util.ApplySet))
 			applySetFlag := cb.Flags.ValueFor(applySet)
-			applySetFlag = applySetFlag.Description("[alpha] The name of the ApplySet that tracks which resources are being managed, for the purposes of determining what to prune. Live resources that are part of the ApplySet but have been removed from the provided configs will be deleted. Format: [RESOURCE][.GROUP]/NAME. A Secret will be used if no resource or group is specified.")
+			applySetFlag.Description("[alpha] The name of the ApplySet that tracks which resources are being managed, for the purposes of determining what to prune. Live resources that are part of the ApplySet but have been removed from the provided configs will be deleted. Format: [RESOURCE][.GROUP]/NAME. A Secret will be used if no resource or group is specified.")
 			applySetFlag.AvailableWhen(cb.When.Equal(applySetEnabled, true))
 			applySetFlag.Long("applyset")
 
 			allowMissingTemplateKeysFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.AllowMissingTemplateKeys))
-			allowMissingTemplateKeysFlag = allowMissingTemplateKeysFlag.Description("If true, ignore any errors in templates when a field or map key is missing in the template. Only applies to golang and jsonpath output formats.")
+			allowMissingTemplateKeysFlag.Description("If true, ignore any errors in templates when a field or map key is missing in the template. Only applies to golang and jsonpath output formats.")
 			cb.Values.Default(allowMissingTemplateKeysFlag, true)
 			allowMissingTemplateKeysFlag.Long("allow-missing-template-keys").ImplicitValue(true)
 
 			cascadeFlag := cb.Flags.String(&cb.Config.Cascade)
-			cascadeFlag = cascadeFlag.Description("Must be \"background\", \"orphan\", or \"foreground\". Selects the deletion cascading strategy for the dependents (e.g. Pods created by a ReplicationController). Defaults to background.")
+			cascadeFlag.Description("Must be \"background\", \"orphan\", or \"foreground\". Selects the deletion cascading strategy for the dependents (e.g. Pods created by a ReplicationController). Defaults to background.")
 			cb.Values.Default(cascadeFlag, "background")
 			cascadeFlagLong := cascadeFlag.Long("cascade")
 			cascadeFlagLong.ImplicitValue("background")
 
 			dryRunFlag := cb.Flags.ValueFor(dryRun)
-			dryRunFlag = dryRunFlag.Description("Must be \"none\", \"server\", or \"client\". If client strategy, only print the object that would be sent, without sending it. If server strategy, submit server-side request without persisting the resource.")
+			dryRunFlag.Description("Must be \"none\", \"server\", or \"client\". If client strategy, only print the object that would be sent, without sending it. If server strategy, submit server-side request without persisting the resource.")
 			cb.Values.Default(dryRunFlag, util.DryRunNone)
 			dryRunFlagLong := dryRunFlag.Long("dry-run")
 			dryRunFlagLong.ImplicitValue(util.DryRunClient)
@@ -145,83 +145,82 @@ func applyCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[
 			)
 			cb.Values.Default(fieldManager, "kubectl-client-side-apply")
 			fieldManagerFlag := cb.Flags.ValueFor(fieldManager)
-			fieldManagerFlag = fieldManagerFlag.Description("Name of the manager used to track field ownership.")
+			fieldManagerFlag.Description("Name of the manager used to track field ownership.")
 			fieldManagerFlag.Long("field-manager")
 
-			filenameValue := filename
-			filenameFlag := cb.Flags.Sequence(filenameValue)
-			filenameFlag = filenameFlag.DelimitedBy(",")
-			filenameFlag = filenameFlag.Description("The files, directories or URLs that contain the configurations to apply.")
+			filenameFlag := cb.Flags.Sequence(filename)
+			filenameFlag.DelimitedBy(",")
+			filenameFlag.Description("The files, directories or URLs that contain the configurations to apply.")
 			filenameFlag.Long("filename")
 			filenameFlag.Short('f')
 
 			forceFlag := cb.Flags.ValueFor(force)
-			forceFlag = forceFlag.Description("If true, immediately remove resources from API and bypass graceful deletion. Note that immediate deletion of some resources may result in inconsistency or data loss and requires confirmation.")
+			forceFlag.Description("If true, immediately remove resources from API and bypass graceful deletion. Note that immediate deletion of some resources may result in inconsistency or data loss and requires confirmation.")
 			forceFlag.Long("force").ImplicitValue(true)
 
 			forceConflictsFlag := cb.Flags.ValueFor(forceConflicts)
-			forceConflictsFlag = forceConflictsFlag.Description("If true, server-side apply will force the changes against conflicts.")
+			forceConflictsFlag.Description("If true, server-side apply will force the changes against conflicts.")
 			forceConflictsFlag.Long("force-conflicts").ImplicitValue(true)
 
 			gracePeriodFlag := cb.Flags.Int(&cb.Config.GracePeriod)
-			gracePeriodFlag = gracePeriodFlag.Description("Period of time in seconds given to the resource to terminate gracefully. Ignored if negative. Set to 1 for immediate shutdown. Can only be set to 0 when --force is true (force deletion).")
+			gracePeriodFlag.Description("Period of time in seconds given to the resource to terminate gracefully. Ignored if negative. Set to 1 for immediate shutdown. Can only be set to 0 when --force is true (force deletion).")
 			cb.Values.Default(gracePeriodFlag, -1)
 			gracePeriodFlag.Long("grace-period")
 
 			kustomizeFlag := cb.Flags.ValueFor(kustomize)
-			kustomizeFlag = kustomizeFlag.Description("Process a kustomization directory. This flag can't be used together with -f or -R.")
+			kustomizeFlag.Description("Process a kustomization directory. This flag can't be used together with -f or -R.")
 			kustomizeFlag.Long("kustomize")
 			kustomizeFlag.Short('k')
 
 			openapiPatchFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.OpenapiPatch))
-			openapiPatchFlag = openapiPatchFlag.Description("If true, use openapi to calculate diff when the openapi presents and the resource can be found in the openapi spec. Otherwise, fall back to use baked-in types.")
+			openapiPatchFlag.Description("If true, use openapi to calculate diff when the openapi presents and the resource can be found in the openapi spec. Otherwise, fall back to use baked-in types.")
 			cb.Values.Default(openapiPatchFlag, true)
 			openapiPatchFlag.Long("openapi-patch").ImplicitValue(true)
 
 			outputFlag := cb.Flags.String(&cb.Config.Output)
-			outputFlag = outputFlag.Description("Output format. One of: (json, yaml, kyaml, name, go-template, go-template-file, template, templatefile, jsonpath, jsonpath-as-json, jsonpath-file).")
+			outputFlag.Description("Output format. One of: (json, yaml, kyaml, name, go-template, go-template-file, template, templatefile, jsonpath, jsonpath-as-json, jsonpath-file).")
 			outputFlag.Long("output")
 			outputFlag.Short('o')
 
 			overwriteFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Overwrite))
-			overwriteFlag = overwriteFlag.Description("Automatically resolve conflicts between the modified and live configuration by using values from the modified configuration")
+			overwriteFlag.Description("Automatically resolve conflicts between the modified and live configuration by using values from the modified configuration")
 			cb.Values.Default(overwriteFlag, true)
 			overwriteFlag.Long("overwrite").ImplicitValue(true)
 
 			pruneFlag := cb.Flags.ValueFor(prune)
-			pruneFlag = pruneFlag.Description("Automatically delete resource objects, that do not appear in the configs and are created by either apply or create --save-config. Should be used with either -l or --all.")
+			pruneFlag.Description("Automatically delete resource objects, that do not appear in the configs and are created by either apply or create --save-config. Should be used with either -l or --all.")
 			pruneFlag.Long("prune").ImplicitValue(true)
 
 			pruneAllowlistValue := cb.Values.Sequence(&cb.Config.PruneAllowlist, cli.Value.String())
 			pruneAllowlistFlag := cb.Flags.Sequence(pruneAllowlistValue)
-			pruneAllowlistFlag = pruneAllowlistFlag.Description("Overwrite the default allowlist with <group/version/kind> for --prune")
+			pruneAllowlistFlag.Description("Overwrite the default allowlist with <group/version/kind> for --prune")
 			pruneAllowlistFlag.Long("prune-allowlist")
 
 			recordFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Record))
-			recordFlag = recordFlag.Description("Record current kubectl command in the resource annotation. If set to false, do not record the command. If set to true, record the command. If not set, default to updating the existing annotation value only if one already exists.")
-			recordFlag = recordFlag.Hidden().Release(preexistingDeprecation("--record will be removed in the future"))
+			recordFlag.Description("Record current kubectl command in the resource annotation. If set to false, do not record the command. If set to true, record the command. If not set, default to updating the existing annotation value only if one already exists.")
+			recordFlag.Hidden().Release(preexistingDeprecation("--record will be removed in the future"))
 			recordFlag.Long("record").ImplicitValue(true)
 
 			recursiveFlag := cb.Flags.ValueFor(recursive)
-			recursiveFlag = recursiveFlag.Description("Process the directory used in -f, --filename recursively. Useful when you want to manage related manifests organized within the same directory.")
+			recursiveFlag.Description("Process the directory used in -f, --filename recursively. Useful when you want to manage related manifests organized within the same directory.")
 			recursiveFlag.Long("recursive").ImplicitValue(true)
 			recursiveFlag.Short('R').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
 
 			selectorFlag := cb.Flags.ValueFor(selector)
-			selectorFlag = selectorFlag.Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
+			selectorFlag.Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
 			selectorFlag.Long("selector")
 			selectorFlag.Short('l')
 
 			serverSideFlag := cb.Flags.ValueFor(serverSide)
-			serverSideFlag = serverSideFlag.Description("If true, apply runs in the server instead of the client.")
+			serverSideFlag.Description("If true, apply runs in the server instead of the client.")
 			serverSideFlag.Long("server-side").ImplicitValue(true)
 
 			showManagedFieldsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowManagedFields))
-			showManagedFieldsFlag = showManagedFieldsFlag.Description("If true, keep the managedFields when printing objects in JSON or YAML format.")
+			showManagedFieldsFlag.Description("If true, keep the managedFields when printing objects in JSON or YAML format.")
 			showManagedFieldsFlag.Long("show-managed-fields").ImplicitValue(true)
 
 			subresourceFlag := cb.Flags.ValueFor(subresource)
-			subresourceFlag = subresourceFlag.Description("If specified, apply will operate on the subresource of the requested object.  Only allowed when using --server-side.")
+			subresourceFlag.Description("If specified, apply will operate on the subresource of the requested object.  Only allowed when using --server-side.")
 			subresourceFlag.CompleteBy(literalCompleter[applyConfig](
 				cli.CompletionCandidateValue,
 				"status", "scale", "resize",
@@ -229,21 +228,21 @@ func applyCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[
 			subresourceFlag.Long("subresource")
 
 			templateFlag := cb.Flags.String(&cb.Config.Template)
-			templateFlag = templateFlag.Description("Template string or path to template file to use when -o=go-template, -o=go-template-file. The template format is golang templates [http://golang.org/pkg/text/template/#pkg-overview].")
+			templateFlag.Description("Template string or path to template file to use when -o=go-template, -o=go-template-file. The template format is golang templates [http://golang.org/pkg/text/template/#pkg-overview].")
 			templateFlag.Long("template")
 
 			timeoutFlag := cb.Flags.Value(&cb.Config.Timeout, durationLanguage())
-			timeoutFlag = timeoutFlag.Description("The length of time to wait before giving up on a delete, zero means determine a timeout from the size of the object")
+			timeoutFlag.Description("The length of time to wait before giving up on a delete, zero means determine a timeout from the size of the object")
 			timeoutFlag.Long("timeout")
 
 			validateFlag := cb.Flags.String(&cb.Config.Validate)
-			validateFlag = validateFlag.Description("Must be one of: strict (or true), warn, ignore (or false). \"true\" or \"strict\" will use a schema to validate the input and fail the request if invalid. It will perform server side validation if ServerSideFieldValidation is enabled on the api-server, but will fall back to less reliable client-side validation if not. \"warn\" will warn about unknown or duplicate fields without blocking the request if server-side field validation is enabled on the API server, and behave as \"ignore\" otherwise. \"false\" or \"ignore\" will not perform any schema validation, silently dropping any unknown or duplicate fields.")
+			validateFlag.Description("Must be one of: strict (or true), warn, ignore (or false). \"true\" or \"strict\" will use a schema to validate the input and fail the request if invalid. It will perform server side validation if ServerSideFieldValidation is enabled on the api-server, but will fall back to less reliable client-side validation if not. \"warn\" will warn about unknown or duplicate fields without blocking the request if server-side field validation is enabled on the API server, and behave as \"ignore\" otherwise. \"false\" or \"ignore\" will not perform any schema validation, silently dropping any unknown or duplicate fields.")
 			cb.Values.Default(validateFlag, "strict")
 			validateFlagLong := validateFlag.Long("validate")
 			validateFlagLong.ImplicitValue("strict")
 
 			waitFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Wait))
-			waitFlag = waitFlag.Description("If true, wait for resources to be gone before returning. This waits for finalizers.")
+			waitFlag.Description("If true, wait for resources to be gone before returning. This waits for finalizers.")
 			waitFlag.Long("wait").ImplicitValue(true)
 
 			cb.Rule.AtMostOne(filename, kustomize)

@@ -55,7 +55,7 @@ func diffCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[d
 			serverSide := cb.Values.Bool(&cb.Config.ServerSide)
 
 			concurrencyFlag := cb.Flags.Int(&cb.Config.Concurrency)
-			concurrencyFlag = concurrencyFlag.Description("Number of objects to process in parallel when diffing against the live version. Larger number = faster, but more memory, I/O and CPU over that shorter period of time.")
+			concurrencyFlag.Description("Number of objects to process in parallel when diffing against the live version. Larger number = faster, but more memory, I/O and CPU over that shorter period of time.")
 			cb.Values.Default(concurrencyFlag, 1)
 			concurrencyFlag.Long("concurrency")
 
@@ -71,54 +71,53 @@ func diffCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[d
 			)
 			cb.Values.Default(fieldManager, "kubectl-client-side-apply")
 			fieldManagerFlag := cb.Flags.ValueFor(fieldManager)
-			fieldManagerFlag = fieldManagerFlag.Description("Name of the manager used to track field ownership.")
+			fieldManagerFlag.Description("Name of the manager used to track field ownership.")
 			fieldManagerFlag.Long("field-manager")
 
-			filenameValue := filename
-			filenameFlag := cb.Flags.Sequence(filenameValue)
-			filenameFlag = filenameFlag.DelimitedBy(",")
-			filenameFlag = filenameFlag.Description("Filename, directory, or URL to files contains the configuration to diff")
+			filenameFlag := cb.Flags.Sequence(filename)
+			filenameFlag.DelimitedBy(",")
+			filenameFlag.Description("Filename, directory, or URL to files contains the configuration to diff")
 			filenameFlag.Long("filename")
 			filenameFlag.Short('f')
 
 			forceConflictsFlag := cb.Flags.ValueFor(forceConflicts)
-			forceConflictsFlag = forceConflictsFlag.Description("If true, server-side apply will force the changes against conflicts.")
+			forceConflictsFlag.Description("If true, server-side apply will force the changes against conflicts.")
 			forceConflictsFlag.Long("force-conflicts").ImplicitValue(true)
 
 			kustomizeFlag := cb.Flags.ValueFor(kustomize)
-			kustomizeFlag = kustomizeFlag.Description("Process the kustomization directory. This flag can't be used together with -f or -R.")
+			kustomizeFlag.Description("Process the kustomization directory. This flag can't be used together with -f or -R.")
 			kustomizeFlag.Long("kustomize")
 			kustomizeFlag.Short('k')
 
 			pruneFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Prune))
-			pruneFlag = pruneFlag.Description("Include resources that would be deleted by pruning. Can be used with -l and default shows all resources would be pruned")
+			pruneFlag.Description("Include resources that would be deleted by pruning. Can be used with -l and default shows all resources would be pruned")
 			pruneFlag.Long("prune").ImplicitValue(true)
 
 			pruneAllowlistValue := cb.Values.Sequence(&cb.Config.PruneAllowlist, cli.Value.String())
 			pruneAllowlistFlag := cb.Flags.Sequence(pruneAllowlistValue)
-			pruneAllowlistFlag = pruneAllowlistFlag.Description("Overwrite the default allowlist with <group/version/kind> for --prune")
+			pruneAllowlistFlag.Description("Overwrite the default allowlist with <group/version/kind> for --prune")
 			pruneAllowlistFlag.Long("prune-allowlist")
 
 			recursiveFlag := cb.Flags.ValueFor(recursive)
-			recursiveFlag = recursiveFlag.Description("Process the directory used in -f, --filename recursively. Useful when you want to manage related manifests organized within the same directory.")
+			recursiveFlag.Description("Process the directory used in -f, --filename recursively. Useful when you want to manage related manifests organized within the same directory.")
 			recursiveFlag.Long("recursive").ImplicitValue(true)
 			recursiveFlag.Short('R').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
 
 			selectorFlag := cb.Flags.String(&cb.Config.Selector)
-			selectorFlag = selectorFlag.Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
+			selectorFlag.Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
 			selectorFlag.Long("selector")
 			selectorFlag.Short('l')
 
 			serverSideFlag := cb.Flags.ValueFor(serverSide)
-			serverSideFlag = serverSideFlag.Description("If true, apply runs in the server instead of the client.")
+			serverSideFlag.Description("If true, apply runs in the server instead of the client.")
 			serverSideFlag.Long("server-side").ImplicitValue(true)
 
 			showManagedFieldsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowManagedFields))
-			showManagedFieldsFlag = showManagedFieldsFlag.Description("If true, include managed fields in the diff.")
+			showManagedFieldsFlag.Description("If true, include managed fields in the diff.")
 			showManagedFieldsFlag.Long("show-managed-fields").ImplicitValue(true)
 
 			showSecretsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowSecrets))
-			showSecretsFlag = showSecretsFlag.Description("If true, do not mask secret values in the diff.")
+			showSecretsFlag.Description("If true, do not mask secret values in the diff.")
 			showSecretsFlag.Long("show-secrets").ImplicitValue(true)
 
 			cb.Rule.AtMostOne(filename, kustomize)

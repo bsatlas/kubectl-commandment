@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -51,7 +52,7 @@ type diffPruner struct {
 
 func runDiff(ctx context.Context, cfg *diffConfig) error {
 	filename := resource.FilenameOptions{
-		Filenames: append([]string(nil), cfg.Filename...),
+		Filenames: slices.Clone(cfg.Filename),
 		Kustomize: cfg.Kustomize,
 		Recursive: cfg.Recursive,
 	}
@@ -234,7 +235,7 @@ func (pruner *diffPruner) prune(ctx context.Context, tracker *diffTracker, names
 	if err != nil {
 		return nil, err
 	}
-	pruned := make([]runtime.Object, 0)
+	var pruned []runtime.Object
 	for _, object := range objects {
 		metadata, err := meta.Accessor(object)
 		if err != nil {

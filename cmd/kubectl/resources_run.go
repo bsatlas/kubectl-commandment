@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -26,7 +27,7 @@ func runSetResources(_ context.Context, cfg *setResourcesConfig) error {
 		return err
 	}
 	filename := resource.FilenameOptions{
-		Filenames: append([]string(nil), cfg.Filename...),
+		Filenames: slices.Clone(cfg.Filename),
 		Kustomize: cfg.Kustomize,
 		Recursive: cfg.Recursive,
 	}
@@ -38,7 +39,7 @@ func runSetResources(_ context.Context, cfg *setResourcesConfig) error {
 		FilenameParam(enforceNamespace, &filename).
 		Flatten()
 	if !cfg.Local {
-		builder = builder.LabelSelectorParam(cfg.Selector).ResourceTypeOrNameArgs(cfg.All, cfg.Resources...).Latest()
+		builder.LabelSelectorParam(cfg.Selector).ResourceTypeOrNameArgs(cfg.All, cfg.Resources...).Latest()
 	}
 	infos, err := builder.Do().Infos()
 	if err != nil {

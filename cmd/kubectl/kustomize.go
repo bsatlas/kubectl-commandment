@@ -118,7 +118,7 @@ var kustomizeCommand = cli.Command[kustomizeConfig]{
 		enableHelmFlag.Description("Enable use of the Helm chart inflator generator.").Long("enable-helm").ImplicitValue(true)
 
 		enableManagedbyLabelFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.EnableManagedbyLabel))
-		enableManagedbyLabelFlag = enableManagedbyLabelFlag.Description("enable adding app.kubernetes.io/managed-by").Hidden().Release(preexistingDeprecation("The flag `enable-managedby-label` has been deprecated. Use the `managedByLabel` option in the `buildMetadata` field instead."))
+		enableManagedbyLabelFlag.Description("enable adding app.kubernetes.io/managed-by").Hidden().Release(preexistingDeprecation("The flag `enable-managedby-label` has been deprecated. Use the `managedByLabel` option in the `buildMetadata` field instead."))
 		enableManagedbyLabelFlag.Long("enable-managedby-label").ImplicitValue(true)
 
 		managedbyLabelEnv := cb.Values.Value(&cb.Config.ManagedbyLabelEnv, managedbyLabelEnvironmentLanguage)
@@ -165,7 +165,7 @@ var kustomizeCommand = cli.Command[kustomizeConfig]{
 
 		reorder := cb.Values.Value(&cb.Config.Reorder, reorderLanguage)
 		reorderFlag := cb.Flags.ValueFor(reorder)
-		reorderFlag = reorderFlag.Description("Reorder the resources just before output. Use 'legacy' to apply a legacy reordering (Namespaces first, Webhooks last, etc). Use 'none' to suppress a final reordering.").Hidden().Release(preexistingDeprecation("use the new 'sortOptions' field in kustomization.yaml instead."))
+		reorderFlag.Description("Reorder the resources just before output. Use 'legacy' to apply a legacy reordering (Namespaces first, Webhooks last, etc). Use 'none' to suppress a final reordering.").Hidden().Release(preexistingDeprecation("use the new 'sortOptions' field in kustomization.yaml instead."))
 		reorderFlag.Long("reorder")
 		cb.Values.Default(reorderFlag, krusty.ReorderOptionLegacy)
 		cb.Access.ValueState(reorder, &cb.Config.ReorderState)

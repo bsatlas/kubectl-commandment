@@ -105,7 +105,7 @@ func runSetEnv(_ context.Context, cfg *setEnvConfig) error {
 	}
 
 	filename := resource.FilenameOptions{
-		Filenames: append([]string(nil), cfg.Filename...),
+		Filenames: slices.Clone(cfg.Filename),
 		Kustomize: cfg.Kustomize,
 		Recursive: cfg.Recursive,
 	}
@@ -121,10 +121,10 @@ func runSetEnv(_ context.Context, cfg *setEnvConfig) error {
 			FilenameParam(enforceNamespace, &filename).
 			Flatten()
 		if !cfg.Local {
-			builder = builder.LabelSelectorParam(cfg.Selector).ResourceTypeOrNameArgs(cfg.All, cfg.From).Latest()
+			builder.LabelSelectorParam(cfg.Selector).ResourceTypeOrNameArgs(cfg.All, cfg.From).Latest()
 		}
 		if envFromStdin {
-			builder = builder.StdinInUse()
+			builder.StdinInUse()
 		}
 		infos, err := builder.Do().Infos()
 		if err != nil {
@@ -183,10 +183,10 @@ func runSetEnv(_ context.Context, cfg *setEnvConfig) error {
 		FilenameParam(enforceNamespace, &filename).
 		Flatten()
 	if !cfg.Local {
-		builder = builder.LabelSelectorParam(cfg.Selector).ResourceTypeOrNameArgs(cfg.All, resources...).Latest()
+		builder.LabelSelectorParam(cfg.Selector).ResourceTypeOrNameArgs(cfg.All, resources...).Latest()
 	}
 	if envFromStdin {
-		builder = builder.StdinInUse()
+		builder.StdinInUse()
 	}
 	infos, err := builder.Do().Infos()
 	if err != nil {
@@ -352,7 +352,7 @@ func validateEnvNoOverwrite(existing, updates []v1.EnvVar) error {
 
 func mergeEnv(existing, updates []v1.EnvVar, remove []string) []v1.EnvVar {
 	index := make(map[string]int, len(existing))
-	result := append([]v1.EnvVar(nil), existing...)
+	result := slices.Clone(existing)
 	for position := range result {
 		index[result[position].Name] = position
 	}

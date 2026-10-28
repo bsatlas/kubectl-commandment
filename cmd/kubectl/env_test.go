@@ -44,13 +44,55 @@ func TestSetEnvDeclaresResourceAndEnvironmentRelationships(t *testing.T) {
 			rejected: true,
 		},
 		{
+			name: "keys with from",
+			args: []string{"set", "env", "deployment/nginx", "--keys=MODE", "--from=configmap/app"},
+		},
+		{
 			name:     "set and remove conflict",
 			args:     []string{"set", "env", "deployment/nginx", "MODE=prod", "MODE-"},
 			rejected: true,
 		},
 		{
+			name:     "source required",
+			args:     []string{"set", "env", "MODE=prod"},
+			rejected: true,
+		},
+		{
+			name:     "filename and kustomize conflict",
+			args:     []string{"set", "env", "-f", "object.yaml", "-k", "overlay", "MODE=prod"},
+			rejected: true,
+		},
+		{
+			name:     "recursive kustomize conflict",
+			args:     []string{"set", "env", "deployment/nginx", "MODE=prod", "-k", "overlay", "-R"},
+			rejected: true,
+		},
+		{
+			name:     "all conflicts with selector",
+			args:     []string{"set", "env", "deployment", "MODE=prod", "--all", "--selector=app=web"},
+			rejected: true,
+		},
+		{
+			name: "list without output",
+			args: []string{"set", "env", "deployment/nginx", "--list"},
+		},
+		{
+			name:     "list conflicts with output",
+			args:     []string{"set", "env", "deployment/nginx", "--list", "-o", "yaml"},
+			rejected: true,
+		},
+		{
 			name:     "local forbids resource arguments",
 			args:     []string{"set", "env", "deployment/nginx", "MODE=prod", "--local"},
+			rejected: true,
+		},
+		{
+			name: "local filename source",
+			args: []string{"set", "env", "-f", "object.yaml", "MODE=prod", "--local"},
+		},
+		{
+			name:     "local conflicts with server dry run",
+			args:     []string{"set", "env", "-f", "object.yaml", "MODE=prod", "--local", "--dry-run=server"},
 			rejected: true,
 		},
 	}

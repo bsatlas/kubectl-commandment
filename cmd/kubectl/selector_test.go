@@ -44,6 +44,15 @@ func TestSetSelectorDeclaresSourceAndSelectorGrammar(t *testing.T) {
 			args:     []string{"set", "selector", "service/frontend", "app=frontend", "--local"},
 			rejected: true,
 		},
+		{
+			name: "local filename source",
+			args: []string{"set", "selector", "-f", "service.yaml", "app=frontend", "--local"},
+		},
+		{
+			name:     "local conflicts with server dry run",
+			args:     []string{"set", "selector", "-f", "service.yaml", "app=frontend", "--local", "--dry-run=server"},
+			rejected: true,
+		},
 	}
 
 	for _, test := range tests {

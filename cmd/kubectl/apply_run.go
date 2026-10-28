@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -26,7 +27,7 @@ func runApply(_ context.Context, cfg *applyConfig) error {
 		return err
 	}
 	deleteFlags := delete.NewDeleteFlags("The files, directories or URLs that contain the configurations to apply.")
-	*deleteFlags.FileNameFlags.Filenames = append([]string(nil), cfg.Filename...)
+	*deleteFlags.FileNameFlags.Filenames = slices.Clone(cfg.Filename)
 	*deleteFlags.FileNameFlags.Kustomize = cfg.Kustomize
 	*deleteFlags.FileNameFlags.Recursive = cfg.Recursive
 	*deleteFlags.CascadingStrategy = cfg.Cascade

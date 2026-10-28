@@ -25,8 +25,22 @@ func TestSetServiceAccountDeclaresSourceWithoutInventingLocalResourcePolicy(t *t
 			args: []string{"set", "serviceaccount", "-f", "object.yaml", "builder"},
 		},
 		{
+			name: "kustomize source",
+			args: []string{"set", "serviceaccount", "-k", "overlay", "builder"},
+		},
+		{
 			name:     "source required",
 			args:     []string{"set", "serviceaccount", "builder"},
+			rejected: true,
+		},
+		{
+			name:     "filename and kustomize conflict",
+			args:     []string{"set", "serviceaccount", "-f", "object.yaml", "-k", "overlay", "builder"},
+			rejected: true,
+		},
+		{
+			name:     "recursive kustomize conflict",
+			args:     []string{"set", "serviceaccount", "deployment/nginx", "builder", "-k", "overlay", "-R"},
 			rejected: true,
 		},
 		{
