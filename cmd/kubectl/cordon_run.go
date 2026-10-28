@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -25,17 +24,7 @@ func runCordon(_ context.Context, cfg *cordonConfig) error {
 	return cordonNodes(cfg.Client, cfg.Streams, cfg.Arguments, cfg.Selector, cfg.DryRun, nodeUnschedulable)
 }
 
-func runUncordon(_ context.Context, cfg *uncordonConfig) error {
-	return cordonNodes(cfg.Client, cfg.Streams, cfg.Arguments, cfg.Selector, cfg.DryRun, nodeSchedulable)
-}
-
 func cordonNodes(client clientConfig, streams genericiooptions.IOStreams, names []string, selector, dryRun string, state nodeSchedulingState) error {
-	if len(names) == 0 && selector == "" {
-		return errors.New("a node name or --selector is required")
-	}
-	if len(names) != 0 && selector != "" {
-		return errors.New("cannot specify both a node name and --selector")
-	}
 	strategy, err := dryRunStrategy(dryRun)
 	if err != nil {
 		return err

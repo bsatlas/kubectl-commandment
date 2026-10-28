@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -19,17 +18,6 @@ import (
 )
 
 func runDrain(ctx context.Context, cfg *drainConfig) error {
-	if len(cfg.Arguments) == 0 && cfg.Selector == "" {
-		return fmt.Errorf("a node name or --selector is required")
-	}
-	if len(cfg.Arguments) != 0 && cfg.Selector != "" {
-		return fmt.Errorf("cannot specify both a node name and --selector")
-	}
-	if cfg.PodSelector != "" {
-		if _, err := labels.Parse(cfg.PodSelector); err != nil {
-			return fmt.Errorf("--pod-selector must be a valid label selector")
-		}
-	}
 	strategy, err := dryRunStrategy(cfg.DryRun)
 	if err != nil {
 		return err
@@ -79,9 +67,10 @@ func runDrain(ctx context.Context, cfg *drainConfig) error {
 		ErrOut:                          cfg.Streams.ErrOut,
 		DryRunStrategy:                  strategy,
 	}
-	warningPrinter := printers.NewWarningPrinter(cfg.Streams.ErrOut, printers.WarningPrinterOptions{
+	warningOptions := printers.WarningPrinterOptions{
 		Color: printers.AllowsColorOutput(cfg.Streams.ErrOut),
-	})
+	}
+	warningPrinter := printers.NewWarningPrinter(cfg.Streams.ErrOut, warningOptions)
 	helper.OnPodDeletionOrEvictionFinished = func(pod *v1.Pod, usingEviction bool, failure error) {
 		operation := "deleted"
 		if usingEviction {

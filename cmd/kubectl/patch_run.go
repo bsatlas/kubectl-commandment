@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 
 	"gopkg.in/evanphx/json-patch.v4"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -38,33 +37,12 @@ import (
 	"k8s.io/kubectl/pkg/scheme"
 )
 
-var patchKinds = map[string]types.PatchType{
-	"json":      types.JSONPatchType,
-	"merge":     types.MergePatchType,
-	"strategic": types.StrategicMergePatchType,
-}
-
 func runPatch(_ context.Context, cfg *patchConfig) error {
-	if cfg.Patch != "" && cfg.PatchFile != "" {
-		return fmt.Errorf("cannot specify --patch and --patch-file together")
-	}
-	if cfg.Patch == "" && cfg.PatchFile == "" {
-		return fmt.Errorf("must specify --patch or --patch-file containing the contents of the patch")
-	}
-	if cfg.Local && len(cfg.Arguments) != 0 {
-		return fmt.Errorf("cannot specify --local and server resources")
-	}
 	strategy, err := dryRunStrategy(cfg.DryRun)
 	if err != nil {
 		return err
 	}
-	if cfg.Local && strategy == util.DryRunServer {
-		return fmt.Errorf("cannot specify --local and --dry-run=server - did you mean --dry-run=client?")
-	}
-	patchType, ok := patchKinds[strings.ToLower(cfg.Type)]
-	if !ok {
-		return fmt.Errorf("--type must be one of [json merge strategic], not %q", cfg.Type)
-	}
+	patchType := cfg.Type
 
 	patchBytes := []byte(cfg.Patch)
 	if cfg.PatchFile != "" {
@@ -152,11 +130,11 @@ func runPatch(_ context.Context, cfg *patchConfig) error {
 					patched = recorded
 				}
 			}
-			print, err := toPrinter(patchStatus(didPatch))
+			printObject, err := toPrinter(patchStatus(didPatch))
 			if err != nil {
 				return err
 			}
-			return print(patched)
+			return printObject(patched)
 		}
 
 		original, err := runtime.Encode(unstructured.UnstructuredJSONScheme, info.Object)
@@ -171,11 +149,11 @@ func runPatch(_ context.Context, cfg *patchConfig) error {
 		if err != nil {
 			return err
 		}
-		print, err := toPrinter(patchStatus(!equality.Semantic.DeepEqual(info.Object, patched)))
+		printObject, err := toPrinter(patchStatus(!equality.Semantic.DeepEqual(info.Object, patched)))
 		if err != nil {
 			return err
 		}
-		return print(patched)
+		return printObject(patched)
 	})
 	if err != nil {
 		return err

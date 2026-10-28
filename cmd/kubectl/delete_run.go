@@ -42,7 +42,7 @@ func runDelete(_ context.Context, cfg *deleteConfig) error {
 	*flags.FieldSelector = cfg.FieldSelector
 	*flags.All = cfg.All
 	*flags.AllNamespaces = cfg.AllNamespaces
-	*flags.CascadingStrategy = cfg.Cascade
+	*flags.CascadingStrategy = cfg.Cascade.flagValue()
 	*flags.Force = cfg.Force
 	*flags.GracePeriod = cfg.GracePeriod
 	*flags.IgnoreNotFound = cfg.IgnoreNotFound
@@ -57,29 +57,19 @@ func runDelete(_ context.Context, cfg *deleteConfig) error {
 		return err
 	}
 
+	if warning := cfg.Cascade.deprecationWarning(); warning != "" {
+		fmt.Fprintln(options.ErrOut, warning)
+	}
+
 	strategy, err := dryRunStrategy(cfg.DryRun)
 	if err != nil {
 		return err
 	}
 	options.DryRunStrategy = strategy
-	if (cfg.All || cfg.Selector != "" || cfg.FieldSelector != "") && !explicitFlagValue(cfg.IgnoreNotFoundState) {
-		options.IgnoreNotFound = true
-	}
-	if options.DeleteNow {
-		if options.GracePeriod != -1 {
-			return fmt.Errorf("--now and --grace-period cannot be specified together")
-		}
-		options.GracePeriod = 1
-	}
-	if options.GracePeriod == 0 && !options.ForceDeletion {
-		options.GracePeriod = 1
-	}
-	if options.ForceDeletion && options.GracePeriod < 0 {
-		options.GracePeriod = 0
-	}
-	options.WarningPrinter = printers.NewWarningPrinter(options.ErrOut, printers.WarningPrinterOptions{
+	warningOptions := printers.WarningPrinterOptions{
 		Color: printers.AllowsColorOutput(options.ErrOut),
-	})
+	}
+	options.WarningPrinter = printers.NewWarningPrinter(options.ErrOut, warningOptions)
 
 	if options.Raw == "" {
 		namespace, enforceNamespace, err := factory.ToRawKubeConfigLoader().Namespace()
@@ -137,8 +127,8 @@ func runDelete(_ context.Context, cfg *deleteConfig) error {
 		}
 	}
 
-	if err := options.Validate(); err != nil {
-		return err
+	if options.GracePeriod == 0 && options.ForceDeletion {
+		options.WarningPrinter.Print("Immediate deletion does not wait for confirmation that the running resource has been terminated. The resource may continue to run on the cluster indefinitely.")
 	}
 	return options.RunDelete(factory)
 }

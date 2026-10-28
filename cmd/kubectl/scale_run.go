@@ -15,13 +15,6 @@ import (
 )
 
 func runScale(_ context.Context, cfg *scaleConfig) error {
-	if cfg.Replicas < 0 {
-		return fmt.Errorf("the --replicas=COUNT flag is required, and COUNT must be greater than or equal to 0")
-	}
-	if cfg.CurrentReplicas < -1 {
-		return fmt.Errorf("the --current-replicas must specify an integer of -1 or greater")
-	}
-
 	factory := cfg.Client.factory()
 	dryRun, err := dryRunStrategy(cfg.DryRun)
 	if err != nil {

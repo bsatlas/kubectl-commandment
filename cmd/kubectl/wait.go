@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"time"
 
 	"github.com/abstractionsinc/commandment/cli"
@@ -24,6 +26,7 @@ type waitConfig struct {
 	ShowManagedFields        bool
 	Template                 string
 	Timeout                  time.Duration
+	RequestedTimeout         time.Duration
 }
 
 func waitCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[waitConfig] {
@@ -82,68 +85,86 @@ func waitCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[w
 				form.Sequence(arguments, "ARG", cli.Count.ZeroOrMore())
 			})
 
-			allFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.All))
-			allFlag = allFlag.Description("Select all resources in the namespace of the specified resource types")
+			all := cb.Values.Bool(&cb.Config.All)
+			allFlag := cb.Flags.ValueFor(all)
+			allFlag.Description("Select all resources in the namespace of the specified resource types")
 			allFlag.Long("all").ImplicitValue(true)
 
 			allNamespacesFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.AllNamespaces))
-			allNamespacesFlag = allNamespacesFlag.Description("If present, list the requested object(s) across all namespaces. Namespace in current context is ignored even if specified with --namespace.")
+			allNamespacesFlag.Description("If present, list the requested object(s) across all namespaces. Namespace in current context is ignored even if specified with --namespace.")
 			allNamespacesFlag.Long("all-namespaces").ImplicitValue(true)
 			allNamespacesFlag.Short('A').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
 
 			allowMissingTemplateKeysFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.AllowMissingTemplateKeys))
-			allowMissingTemplateKeysFlag = allowMissingTemplateKeysFlag.Description("If true, ignore any errors in templates when a field or map key is missing in the template. Only applies to golang and jsonpath output formats.")
+			allowMissingTemplateKeysFlag.Description("If true, ignore any errors in templates when a field or map key is missing in the template. Only applies to golang and jsonpath output formats.")
 			cb.Values.Default(allowMissingTemplateKeysFlag, true)
 			allowMissingTemplateKeysFlag.Long("allow-missing-template-keys").ImplicitValue(true)
 
-			fieldSelectorFlag := cb.Flags.String(&cb.Config.FieldSelector)
-			fieldSelectorFlag = fieldSelectorFlag.Description("Selector (field query) to filter on, supports '=', '==', and '!='.(e.g. --field-selector key1=value1,key2=value2). The server only supports a limited number of field queries per type.")
+			fieldSelector := cb.Values.String(&cb.Config.FieldSelector)
+			fieldSelectorFlag := cb.Flags.ValueFor(fieldSelector)
+			fieldSelectorFlag.Description("Selector (field query) to filter on, supports '=', '==', and '!='.(e.g. --field-selector key1=value1,key2=value2). The server only supports a limited number of field queries per type.")
 			fieldSelectorFlag.Long("field-selector")
 
 			filenameValue := cb.Values.Sequence(&cb.Config.Filename, cli.Value.String())
 			filenameFlag := cb.Flags.Sequence(filenameValue)
-			filenameFlag = filenameFlag.DelimitedBy(",")
-			filenameFlag = filenameFlag.Description("identifying the resource.")
+			filenameFlag.DelimitedBy(",")
+			filenameFlag.Description("identifying the resource.")
 			filenameFlag.Long("filename")
 			filenameFlag.Short('f')
 
 			forValue := cb.Values.Sequence(&cb.Config.For, cli.Value.String())
 			forFlag := cb.Flags.Sequence(forValue)
-			forFlag = forFlag.Description("The condition to wait on: [create|delete|condition=condition-name[=condition-value]|jsonpath='{JSONPath expression}'=[JSONPath value]]. The default condition-value is true. Condition values are compared after Unicode simple case folding, which is a more general form of case-insensitivity. Multiple conditions are supported and AND'ed to each other in a sequential order. If --for=create is passed, it is always waited first.")
+			forFlag.Description("The condition to wait on: [create|delete|condition=condition-name[=condition-value]|jsonpath='{JSONPath expression}'=[JSONPath value]]. The default condition-value is true. Condition values are compared after Unicode simple case folding, which is a more general form of case-insensitivity. Multiple conditions are supported and AND'ed to each other in a sequential order. If --for=create is passed, it is always waited first.")
 			forFlag.Long("for")
 
-			localFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Local))
-			localFlag = localFlag.Description("If true, annotation will NOT contact api-server but run locally.")
+			local := cb.Values.Bool(&cb.Config.Local)
+			localFlag := cb.Flags.ValueFor(local)
+			localFlag.Description("If true, annotation will NOT contact api-server but run locally.")
 			localFlag.Long("local").ImplicitValue(true)
 
 			outputFlag := cb.Flags.String(&cb.Config.Output)
-			outputFlag = outputFlag.Description("Output format. One of: (json, yaml, kyaml, name, go-template, go-template-file, template, templatefile, jsonpath, jsonpath-as-json, jsonpath-file).")
+			outputFlag.Description("Output format. One of: (json, yaml, kyaml, name, go-template, go-template-file, template, templatefile, jsonpath, jsonpath-as-json, jsonpath-file).")
 			outputFlag.Long("output")
 			outputFlag.Short('o')
 
 			recursiveFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Recursive))
-			recursiveFlag = recursiveFlag.Description("Process the directory used in -f, --filename recursively. Useful when you want to manage related manifests organized within the same directory.")
+			recursiveFlag.Description("Process the directory used in -f, --filename recursively. Useful when you want to manage related manifests organized within the same directory.")
 			cb.Values.Default(recursiveFlag, true)
 			recursiveFlag.Long("recursive").ImplicitValue(true)
 			recursiveFlag.Short('R').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
 
-			selectorFlag := cb.Flags.String(&cb.Config.Selector)
-			selectorFlag = selectorFlag.Description("Selector (label query) to filter on, supports '=', '==', and '!='.(e.g. -l key1=value1,key2=value2)")
+			selector := cb.Values.String(&cb.Config.Selector)
+			selectorFlag := cb.Flags.ValueFor(selector)
+			selectorFlag.Description("Selector (label query) to filter on, supports '=', '==', and '!='.(e.g. -l key1=value1,key2=value2)")
 			selectorFlag.Long("selector")
 			selectorFlag.Short('l')
 
 			showManagedFieldsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowManagedFields))
-			showManagedFieldsFlag = showManagedFieldsFlag.Description("If true, keep the managedFields when printing objects in JSON or YAML format.")
+			showManagedFieldsFlag.Description("If true, keep the managedFields when printing objects in JSON or YAML format.")
 			showManagedFieldsFlag.Long("show-managed-fields").ImplicitValue(true)
 
 			templateFlag := cb.Flags.String(&cb.Config.Template)
-			templateFlag = templateFlag.Description("Template string or path to template file to use when -o=go-template, -o=go-template-file. The template format is golang templates [http://golang.org/pkg/text/template/#pkg-overview].")
+			templateFlag.Description("Template string or path to template file to use when -o=go-template, -o=go-template-file. The template format is golang templates [http://golang.org/pkg/text/template/#pkg-overview].")
 			templateFlag.Long("template")
 
-			timeoutFlag := cb.Flags.Value(&cb.Config.Timeout, durationLanguage())
-			timeoutFlag = timeoutFlag.Description("The length of time to wait before giving up. Zero means check once and don't wait, negative means wait for a week.")
-			cb.Values.Default(timeoutFlag, 30*time.Second)
+			requestedTimeout := cb.Values.Value(&cb.Config.RequestedTimeout, durationLanguage())
+			cb.Values.Default(requestedTimeout, 30*time.Second)
+			timeoutFlag := cb.Flags.ValueFor(requestedTimeout)
+			timeoutFlag.Description("The length of time to wait before giving up. Zero means check once and don't wait, negative means wait for a week.")
 			timeoutFlag.Long("timeout")
+
+			cb.Rule.AtLeastOne(arguments, filenameValue)
+			cb.Rule.When(cb.When.Equal(local, true)).Forbid(arguments)
+			cb.Values.Derive(&cb.Config.Timeout, cli.Value.ComputedBy(func(_ context.Context, _ *waitConfig, dependencies cli.Dependencies) (time.Duration, error) {
+				timeout, ok := dependencies.Get(requestedTimeout)
+				if !ok {
+					return 0, fmt.Errorf("wait timeout dependency is unavailable")
+				}
+				if timeout < 0 {
+					return 168 * time.Hour, nil
+				}
+				return timeout, nil
+			}).From(requestedTimeout))
 		},
 		Run: runWait,
 	}

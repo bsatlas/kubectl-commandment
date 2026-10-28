@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 
+	"k8s.io/api/autoscaling/v1"
+	"k8s.io/api/autoscaling/v2"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/cli-runtime/pkg/resource"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/scale"
 	"k8s.io/klog/v2"
 	"k8s.io/kubectl/pkg/cmd/util"
@@ -30,26 +33,6 @@ const (
 )
 
 func runAutoscale(ctx context.Context, cfg *autoscaleConfig) error {
-	if cfg.Max < 1 {
-		return fmt.Errorf("--max=MAXPODS is required and must be at least 1, max: %d", cfg.Max)
-	}
-	if cfg.Max < cfg.Min {
-		return fmt.Errorf("--max=MAXPODS must be larger or equal to --min=MINPODS, max: %d, min: %d", cfg.Max, cfg.Min)
-	}
-	if cfg.CPUPercent > 0 && cfg.CPU != "" {
-		return fmt.Errorf("--cpu-percent and --cpu are mutually exclusive")
-	}
-	if cfg.CPU != "" {
-		if _, _, _, err := parseAutoscaleResource(cfg.CPU, "cpu"); err != nil {
-			return err
-		}
-	}
-	if cfg.Memory != "" {
-		if _, _, _, err := parseAutoscaleResource(cfg.Memory, "memory"); err != nil {
-			return err
-		}
-	}
-
 	factory := cfg.Client.factory()
 	dryRun, err := dryRunStrategy(cfg.DryRun)
 	if err != nil {
@@ -164,4 +147,177 @@ func autoscalePrint(cfg *autoscaleConfig, operation string, mode autoscaleDryRun
 	return func(object runtime.Object) error {
 		return printer.PrintObj(object, cfg.Streams.Out)
 	}, nil
+}
+
+func runAutoscaleV1(ctx context.Context, cfg *autoscaleConfig, target autoscaleTarget, mode autoscaleDryRunMode, recorder genericclioptions.Recorder, client kubernetes.Interface) error {
+	name := cfg.Name
+	if name == "" {
+		name = target.name
+	}
+	hpa := &v1.HorizontalPodAutoscaler{
+		Spec: v1.HorizontalPodAutoscalerSpec{
+			ScaleTargetRef: v1.CrossVersionObjectReference{
+				APIVersion: target.mapping.GroupVersionKind.GroupVersion().String(),
+				Kind:       target.mapping.GroupVersionKind.Kind,
+				Name:       target.name,
+			},
+			MaxReplicas: cfg.Max,
+		},
+	}
+	hpa.Name = name
+	if cfg.Min > 0 {
+		hpa.Spec.MinReplicas = new(cfg.Min)
+	}
+	if cfg.CPUPercent >= 0 {
+		hpa.Spec.TargetCPUUtilizationPercentage = new(cfg.CPUPercent)
+	}
+	if target.enforceNamespace {
+		hpa.Namespace = target.namespace
+	}
+	if err := recorder.Record(hpa); err != nil {
+		return fmt.Errorf("error recording current command: %w", err)
+	}
+	if mode == autoscaleDryRunClient {
+		printObject, err := autoscalePrint(cfg, "created", mode)
+		if err != nil {
+			return err
+		}
+		return printObject(hpa)
+	}
+	if err := autoscaleApplyAnnotation(cfg.SaveConfig, hpa); err != nil {
+		return err
+	}
+	actual, err := client.AutoscalingV1().HorizontalPodAutoscalers(target.namespace).Create(ctx, hpa, autoscaleCreateOptions(cfg.FieldManager, mode))
+	if err != nil {
+		return err
+	}
+	printObject, err := autoscalePrint(cfg, "autoscaled", mode)
+	if err != nil {
+		return err
+	}
+	return printObject(actual)
+}
+
+func runAutoscaleV2(ctx context.Context, cfg *autoscaleConfig, target autoscaleTarget, mode autoscaleDryRunMode, recorder genericclioptions.Recorder, client kubernetes.Interface) error {
+	hpa, err := autoscalerV2(cfg, target)
+	if err != nil {
+		return err
+	}
+	if err := recorder.Record(hpa); err != nil {
+		return fmt.Errorf("error recording current command: %w", err)
+	}
+	if mode == autoscaleDryRunClient {
+		printObject, err := autoscalePrint(cfg, "created", mode)
+		if err != nil {
+			return err
+		}
+		return printObject(hpa)
+	}
+	if err := autoscaleApplyAnnotation(cfg.SaveConfig, hpa); err != nil {
+		return err
+	}
+	actual, err := client.AutoscalingV2().HorizontalPodAutoscalers(target.namespace).Create(ctx, hpa, autoscaleCreateOptions(cfg.FieldManager, mode))
+	if err != nil {
+		return err
+	}
+	printObject, err := autoscalePrint(cfg, "autoscaled", mode)
+	if err != nil {
+		return err
+	}
+	return printObject(actual)
+}
+
+func autoscalerV2(cfg *autoscaleConfig, target autoscaleTarget) (*v2.HorizontalPodAutoscaler, error) {
+	name := cfg.Name
+	if name == "" {
+		name = target.name
+	}
+	hpa := &v2.HorizontalPodAutoscaler{
+		Spec: v2.HorizontalPodAutoscalerSpec{
+			ScaleTargetRef: v2.CrossVersionObjectReference{
+				APIVersion: target.mapping.GroupVersionKind.GroupVersion().String(),
+				Kind:       target.mapping.GroupVersionKind.Kind,
+				Name:       target.name,
+			},
+			MaxReplicas: cfg.Max,
+		},
+	}
+	hpa.Name = name
+	if cfg.Min > 0 {
+		hpa.Spec.MinReplicas = new(cfg.Min)
+	}
+	if target.enforceNamespace {
+		hpa.Namespace = target.namespace
+	}
+
+	var metrics []v2.MetricSpec
+	if cfg.CPUPercent > 0 {
+		target := v2.MetricTarget{
+			Type:               v2.UtilizationMetricType,
+			AverageUtilization: new(cfg.CPUPercent),
+		}
+		resourceMetric := &v2.ResourceMetricSource{
+			Name:   "cpu",
+			Target: target,
+		}
+		metric := v2.MetricSpec{
+			Type:     v2.ResourceMetricSourceType,
+			Resource: resourceMetric,
+		}
+		metrics = append(metrics, metric)
+	}
+	if cfg.CPU.Type != "" {
+		metric, err := autoscaleMetric(cfg.CPU, "cpu")
+		if err != nil {
+			return nil, err
+		}
+		metrics = append(metrics, metric)
+	}
+	if cfg.Memory.Type != "" {
+		metric, err := autoscaleMetric(cfg.Memory, "memory")
+		if err != nil {
+			return nil, err
+		}
+		metrics = append(metrics, metric)
+	}
+	hpa.Spec.Metrics = metrics
+	return hpa, nil
+}
+
+func autoscaleMetric(input autoscaleMetricTarget, resourceName string) (v2.MetricSpec, error) {
+	target := v2.MetricTarget{
+		Type: input.Type,
+	}
+	switch input.Type {
+	case v2.UtilizationMetricType:
+		target.AverageUtilization = new(input.Utilization)
+	case v2.AverageValueMetricType:
+		quantity := input.Quantity.DeepCopy()
+		target.AverageValue = &quantity
+	default:
+		return v2.MetricSpec{}, fmt.Errorf("unsupported metric type: %v", input.Type)
+	}
+	resourceMetric := &v2.ResourceMetricSource{
+		Target: target,
+	}
+	switch resourceName {
+	case "cpu":
+		resourceMetric.Name = "cpu"
+	case "memory":
+		resourceMetric.Name = "memory"
+	default:
+		return v2.MetricSpec{}, fmt.Errorf("unsupported resource type: %v", resourceName)
+	}
+	metric := v2.MetricSpec{
+		Type:     v2.ResourceMetricSourceType,
+		Resource: resourceMetric,
+	}
+	return metric, nil
+}
+
+func autoscaleV1Compatible(cfg *autoscaleConfig) (bool, error) {
+	if cfg.CPU.Type == "" {
+		return false, fmt.Errorf("empty input")
+	}
+	return (cfg.CPUPercent >= 0 && cfg.Memory.Type == "") || (cfg.Memory.Type == "" && cfg.CPU.Type == v2.UtilizationMetricType), nil
 }

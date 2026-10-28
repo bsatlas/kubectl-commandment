@@ -27,9 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/errors"
-	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
-	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/cli-runtime/pkg/resource"
 	"k8s.io/klog/v2"
@@ -47,40 +45,12 @@ func runTaint(_ context.Context, cfg *taintConfig) error {
 	if err != nil {
 		return err
 	}
-	resources, changes, err := splitTaintArguments(cfg.Arguments)
-	if err != nil {
-		return err
-	}
-	if len(resources) == 0 {
-		return fmt.Errorf("one or more resources must be specified as <resource> <name>")
-	}
-	if len(changes) == 0 {
-		return fmt.Errorf("at least one taint update is required")
-	}
-	add, remove, err := parseTaintChanges(changes)
-	if err != nil {
-		return err
-	}
-	for _, added := range add {
-		for _, removed := range remove {
-			if added.Key == removed.Key && (removed.Effect == "" || added.Effect == removed.Effect) {
-				return fmt.Errorf("can not both modify and remove the following taint(s) in the same command: %s=%s", removed.Key, removed.Effect)
-			}
-		}
-	}
-	if cfg.All && cfg.Selector != "" {
-		return fmt.Errorf("setting 'all' parameter with a non empty selector is prohibited")
-	}
-	if !cfg.All && cfg.Selector == "" && len(resources) < 2 {
-		return fmt.Errorf("at least one resource name must be specified since 'all' parameter is not set")
-	}
-
 	factory := cfg.Client.factory()
 	mapper, err := factory.ToRESTMapper()
 	if err != nil {
 		return err
 	}
-	request, _, err := explain.SplitAndParseResourceRequest(strings.ToLower(resources[0]), mapper)
+	request, _, err := explain.SplitAndParseResourceRequest(strings.ToLower(cfg.Operands.Resources[0]), mapper)
 	if err != nil {
 		return err
 	}
@@ -89,7 +59,7 @@ func runTaint(_ context.Context, cfg *taintConfig) error {
 		return err
 	}
 	if kind.Kind != "Node" {
-		return fmt.Errorf("invalid resource type %s, only node types are supported", strings.ToLower(resources[0]))
+		return fmt.Errorf("invalid resource type %s, only node types are supported", strings.ToLower(cfg.Operands.Resources[0]))
 	}
 	namespace, _, err := factory.ToRawKubeConfigLoader().Namespace()
 	if err != nil {
@@ -102,8 +72,8 @@ func runTaint(_ context.Context, cfg *taintConfig) error {
 	if cfg.All {
 		builder = builder.SelectAllParam(true).ResourceTypes("node").Flatten().Latest()
 	}
-	if !cfg.All && cfg.Selector == "" && len(resources) >= 2 {
-		builder = builder.ResourceNames("node", resources[1:]...)
+	if !cfg.All && cfg.Selector == "" && len(cfg.Operands.Resources) >= 2 {
+		builder = builder.ResourceNames("node", cfg.Operands.Resources[1:]...)
 	}
 	builder = builder.LabelSelectorParam(cfg.Selector).Flatten().Latest()
 	result := builder.Do()
@@ -119,7 +89,7 @@ func runTaint(_ context.Context, cfg *taintConfig) error {
 		if err != nil {
 			return err
 		}
-		operation, err := updateNodeTaints(info.Object, cfg.Overwrite, add, remove)
+		operation, err := updateNodeTaints(info.Object, cfg.Overwrite, cfg.Operands.Add, cfg.Operands.Remove)
 		if err != nil {
 			return err
 		}
@@ -185,91 +155,6 @@ func runTaint(_ context.Context, cfg *taintConfig) error {
 	})
 }
 
-func splitTaintArguments(args []string) ([]string, []string, error) {
-	var resources []string
-	var taints []string
-	metTaint := false
-	for _, arg := range args {
-		isTaint := strings.Contains(arg, "=") || strings.Contains(arg, ":") || strings.HasSuffix(arg, "-")
-		if !metTaint && isTaint {
-			metTaint = true
-		}
-		if metTaint {
-			if !isTaint {
-				return nil, nil, fmt.Errorf("all resources must be specified before taint changes: %s", arg)
-			}
-			taints = append(taints, arg)
-			continue
-		}
-		resources = append(resources, arg)
-	}
-	return resources, taints, nil
-}
-
-func parseTaintChanges(specs []string) ([]v1.Taint, []v1.Taint, error) {
-	var add []v1.Taint
-	var remove []v1.Taint
-	unique := map[v1.TaintEffect]sets.Set[string]{}
-	for _, spec := range specs {
-		if strings.HasSuffix(spec, "-") {
-			taint, err := parseTaint(strings.TrimSuffix(spec, "-"))
-			if err != nil {
-				return nil, nil, err
-			}
-			remove = append(remove, v1.Taint{
-				Key:    taint.Key,
-				Effect: taint.Effect,
-			})
-			continue
-		}
-		taint, err := parseTaint(spec)
-		if err != nil {
-			return nil, nil, err
-		}
-		if taint.Effect == "" {
-			return nil, nil, fmt.Errorf("invalid taint spec: %v", spec)
-		}
-		if unique[taint.Effect] == nil {
-			unique[taint.Effect] = sets.New[string]()
-		}
-		if unique[taint.Effect].Has(taint.Key) {
-			return nil, nil, fmt.Errorf("duplicated taints with the same key and effect: %v", taint)
-		}
-		unique[taint.Effect].Insert(taint.Key)
-		add = append(add, taint)
-	}
-	return add, remove, nil
-}
-
-func parseTaint(spec string) (v1.Taint, error) {
-	var taint v1.Taint
-	parts := strings.Split(spec, ":")
-	if len(parts) > 2 {
-		return taint, fmt.Errorf("invalid taint spec: %v", spec)
-	}
-	keyValue := strings.Split(parts[0], "=")
-	if len(keyValue) > 2 {
-		return taint, fmt.Errorf("invalid taint spec: %v", spec)
-	}
-	taint.Key = keyValue[0]
-	if len(keyValue) == 2 {
-		taint.Value = keyValue[1]
-		if errs := validation.IsValidLabelValue(taint.Value); len(errs) > 0 {
-			return taint, fmt.Errorf("invalid taint spec: %v, %s", spec, strings.Join(errs, "; "))
-		}
-	}
-	if len(parts) == 2 {
-		taint.Effect = v1.TaintEffect(parts[1])
-		if taint.Effect != v1.TaintEffectNoSchedule && taint.Effect != v1.TaintEffectPreferNoSchedule && taint.Effect != v1.TaintEffectNoExecute {
-			return taint, fmt.Errorf("invalid taint effect: %v, unsupported taint effect", taint.Effect)
-		}
-	}
-	if errs := validation.IsQualifiedName(taint.Key); len(errs) > 0 {
-		return taint, fmt.Errorf("invalid taint spec: %v, %s", spec, strings.Join(errs, "; "))
-	}
-	return taint, nil
-}
-
 func updateNodeTaints(object runtime.Object, overwrite bool, add, remove []v1.Taint) (string, error) {
 	node, ok := object.(*v1.Node)
 	if !ok {
@@ -289,7 +174,6 @@ func updateNodeTaints(object runtime.Object, overwrite bool, add, remove []v1.Ta
 		}
 	}
 	newTaints := append([]v1.Taint(nil), add...)
-	added := false
 	for _, current := range node.Spec.Taints {
 		found := false
 		for _, next := range newTaints {
@@ -300,9 +184,9 @@ func updateNodeTaints(object runtime.Object, overwrite bool, add, remove []v1.Ta
 		}
 		if !found {
 			newTaints = append(newTaints, current)
-			added = true
 		}
 	}
+	added := len(node.Spec.Taints) != len(newTaints)
 	var deleteErrs []error
 	deleted := false
 	for _, target := range remove {

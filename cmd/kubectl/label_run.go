@@ -19,7 +19,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"gopkg.in/evanphx/json-patch.v4"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -28,7 +27,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/json"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/cli-runtime/pkg/resource"
 	"k8s.io/client-go/tools/clientcmd"
@@ -42,43 +40,6 @@ func runLabel(_ context.Context, cfg *labelConfig) error {
 	if err != nil {
 		return err
 	}
-	resources, labelArgs, err := util.GetResourcesAndPairs(cfg.Arguments, "label")
-	if err != nil {
-		return err
-	}
-	newLabels, removeLabels, err := parseLabelChanges(labelArgs)
-	if err != nil {
-		return err
-	}
-	if cfg.List && cfg.Output != "" {
-		return fmt.Errorf("--list and --output may not be specified together")
-	}
-	if cfg.All && cfg.Selector != "" {
-		return fmt.Errorf("cannot set --all and --selector at the same time")
-	}
-	if cfg.All && cfg.FieldSelector != "" {
-		return fmt.Errorf("cannot set --all and --field-selector at the same time")
-	}
-	if cfg.List && (len(newLabels) > 0 || len(removeLabels) > 0) {
-		return fmt.Errorf("cannot modify labels when --list is specified")
-	}
-	if cfg.Local {
-		if strategy == util.DryRunServer {
-			return fmt.Errorf("cannot specify --local and --dry-run=server - did you mean --dry-run=client?")
-		}
-		if len(resources) > 0 {
-			return fmt.Errorf("can only use local files by -f pod.yaml or --filename=pod.json when --local=true is set")
-		}
-		if len(cfg.Filename) == 0 && cfg.Kustomize == "" {
-			return fmt.Errorf("one or more files must be specified as -f pod.yaml or --filename=pod.json")
-		}
-	} else if len(resources) == 0 && len(cfg.Filename) == 0 && cfg.Kustomize == "" {
-		return fmt.Errorf("one or more resources must be specified as <resource> <name> or <resource>/<name>")
-	}
-	if len(newLabels) == 0 && len(removeLabels) == 0 && !cfg.List {
-		return fmt.Errorf("at least one label update is required")
-	}
-
 	factory := cfg.Client.factory()
 	namespace, enforceNamespace, err := factory.ToRawKubeConfigLoader().Namespace()
 	if err != nil && !(cfg.Local && clientcmd.IsEmptyConfig(err)) {
@@ -100,7 +61,7 @@ func runLabel(_ context.Context, cfg *labelConfig) error {
 		builder = builder.LabelSelectorParam(cfg.Selector).
 			FieldSelectorParam(cfg.FieldSelector).
 			AllNamespaces(cfg.AllNamespaces).
-			ResourceTypeOrNameArgs(cfg.All, resources...).
+			ResourceTypeOrNameArgs(cfg.All, cfg.Operands.Resources...).
 			Latest()
 	}
 
@@ -142,7 +103,7 @@ func runLabel(_ context.Context, cfg *labelConfig) error {
 			return err
 		}
 
-		added, removed, err := applyLabels(object, cfg.Overwrite, cfg.ResourceVersion, newLabels, removeLabels)
+		added, removed, err := applyLabels(object, cfg.Overwrite, cfg.ResourceVersion, cfg.Operands.New, cfg.Operands.Remove)
 		if err != nil {
 			return err
 		}
@@ -154,7 +115,7 @@ func runLabel(_ context.Context, cfg *labelConfig) error {
 			if err != nil {
 				return err
 			}
-			for _, label := range removeLabels {
+			for _, label := range cfg.Operands.Remove {
 				if _, ok := accessor.GetLabels()[label]; !ok {
 					fmt.Fprintf(cfg.Streams.ErrOut, "label %q not found.\n", label)
 				}
@@ -213,35 +174,6 @@ func runLabel(_ context.Context, cfg *labelConfig) error {
 		}
 		return printObj(outputObject)
 	})
-}
-
-func parseLabelChanges(specs []string) (map[string]string, []string, error) {
-	labels := map[string]string{}
-	var remove []string
-	for _, spec := range specs {
-		if strings.Contains(spec, "=") {
-			parts := strings.Split(spec, "=")
-			if len(parts) != 2 {
-				return nil, nil, fmt.Errorf("invalid label spec: %v", spec)
-			}
-			if errs := validation.IsValidLabelValue(parts[1]); len(errs) != 0 {
-				return nil, nil, fmt.Errorf("invalid label value: %q: %s", spec, strings.Join(errs, ";"))
-			}
-			labels[parts[0]] = parts[1]
-			continue
-		}
-		if strings.HasSuffix(spec, "-") {
-			remove = append(remove, strings.TrimSuffix(spec, "-"))
-			continue
-		}
-		return nil, nil, fmt.Errorf("unknown label spec: %v", spec)
-	}
-	for _, key := range remove {
-		if _, found := labels[key]; found {
-			return nil, nil, fmt.Errorf("can not both modify and remove a label in the same command")
-		}
-	}
-	return labels, remove, nil
 }
 
 func applyLabels(object runtime.Object, overwrite bool, resourceVersion string, labels map[string]string, remove []string) (sets.Set[string], sets.Set[string], error) {

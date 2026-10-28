@@ -19,10 +19,8 @@ package main
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -58,55 +56,27 @@ func runReplace(ctx context.Context, cfg *replaceConfig) error {
 	*deleteFlags.FileNameFlags.Filenames = append([]string(nil), cfg.Filename...)
 	*deleteFlags.FileNameFlags.Kustomize = cfg.Kustomize
 	*deleteFlags.FileNameFlags.Recursive = cfg.Recursive
-	*deleteFlags.CascadingStrategy = cfg.Cascade
+	*deleteFlags.CascadingStrategy = cfg.Cascade.flagValue()
 	*deleteFlags.Force = cfg.Force
 	*deleteFlags.GracePeriod = cfg.GracePeriod
 	*deleteFlags.Timeout = cfg.Timeout
-	*deleteFlags.Wait = cfg.Wait
+	*deleteFlags.Wait = cfg.WaitForDeletion
 	deleteOptions, err := deleteFlags.ToOptions(dynamicClient, cfg.Streams)
 	if err != nil {
 		return err
 	}
 	deleteOptions.IgnoreNotFound = true
 	deleteOptions.Output = cfg.Output
-	if deleteOptions.GracePeriod == 0 {
-		deleteOptions.GracePeriod = 1
-		deleteOptions.WaitForDeletion = true
-	}
-	if err := deleteOptions.FilenameOptions.RequireFilenameOrKustomize(); err != nil {
-		return err
+	if warning := cfg.Cascade.deprecationWarning(); warning != "" {
+		fmt.Fprintln(deleteOptions.ErrOut, warning)
 	}
 
 	strategy, err := dryRunStrategy(cfg.DryRun)
 	if err != nil {
 		return err
 	}
-	if deleteOptions.GracePeriod >= 0 && !deleteOptions.ForceDeletion {
-		return fmt.Errorf("--grace-period must have --force specified")
-	}
-	if deleteOptions.Timeout != 0 && !deleteOptions.ForceDeletion {
-		return fmt.Errorf("--timeout must have --force specified")
-	}
-	if deleteOptions.ForceDeletion && strategy != util.DryRunNone {
-		return fmt.Errorf("--dry-run can not be used when --force is set")
-	}
 	if cfg.Raw != "" {
-		if len(deleteOptions.FilenameOptions.Filenames) != 1 {
-			return fmt.Errorf("--raw can only use a single local file or stdin")
-		}
 		filename := deleteOptions.FilenameOptions.Filenames[0]
-		if strings.HasPrefix(filename, "http://") || strings.HasPrefix(filename, "https://") {
-			return fmt.Errorf("--raw cannot read from a url")
-		}
-		if deleteOptions.FilenameOptions.Recursive {
-			return fmt.Errorf("--raw and --recursive are mutually exclusive")
-		}
-		if cfg.Output != "" {
-			return fmt.Errorf("--raw and --output are mutually exclusive")
-		}
-		if _, err := url.ParseRequestURI(cfg.Raw); err != nil {
-			return fmt.Errorf("--raw must be a valid URL path: %v", err)
-		}
 		client, err := factory.RESTClient()
 		if err != nil {
 			return err

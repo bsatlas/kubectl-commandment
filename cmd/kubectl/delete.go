@@ -1,35 +1,103 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"net/url"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/abstractionsinc/commandment/cli"
+	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/cli-runtime/pkg/genericiooptions"
 )
 
+type deletionPropagation struct {
+	Propagation       v1.DeletionPropagation
+	DeprecatedBoolean string
+}
+
+func (cascade deletionPropagation) flagValue() string {
+	return strings.ToLower(string(cascade.Propagation))
+}
+
+func (cascade deletionPropagation) deprecationWarning() string {
+	if cascade.DeprecatedBoolean == "" {
+		return ""
+	}
+	replacement := "orphan"
+	if cascade.Propagation == v1.DeletePropagationBackground {
+		replacement = "background"
+	}
+	return fmt.Sprintf("warning: --cascade=%v is deprecated (boolean value) and can be replaced with --cascade=%s.", cascade.DeprecatedBoolean, replacement)
+}
+
+var deletionPropagationLanguage = cli.ValueCodec[deletionPropagation]{
+	Name: "kubectl-delete-cascade",
+	Parse: func(value string) (deletionPropagation, error) {
+		if boolean, err := strconv.ParseBool(value); err == nil {
+			propagation := v1.DeletePropagationOrphan
+			if boolean {
+				propagation = v1.DeletePropagationBackground
+			}
+			cascade := deletionPropagation{
+				Propagation:       propagation,
+				DeprecatedBoolean: value,
+			}
+			return cascade, nil
+		}
+
+		var propagation v1.DeletionPropagation
+		switch value {
+		case "background":
+			propagation = v1.DeletePropagationBackground
+		case "foreground":
+			propagation = v1.DeletePropagationForeground
+		case "orphan":
+			propagation = v1.DeletePropagationOrphan
+		default:
+			message := fmt.Sprintf(`invalid cascade value (%v). Must be "background", "foreground", or "orphan"`, value)
+			return deletionPropagation{}, cli.Rejection.Message(
+				"kubectl-delete-cascade",
+				message,
+				cli.Rejection.At(0, 0, len(value)),
+			)
+		}
+		cascade := deletionPropagation{
+			Propagation: propagation,
+		}
+		return cascade, nil
+	},
+	Format: func(value deletionPropagation) string { return value.flagValue() },
+	Snapshot: func(value deletionPropagation) deletionPropagation {
+		return value
+	},
+}
+
 type deleteConfig struct {
-	Client              clientConfig
-	Streams             genericiooptions.IOStreams
-	IgnoreNotFoundState cli.OptionalValue[cli.ValueState]
-	Arguments           []string
-	All                 bool
-	AllNamespaces       bool
-	Cascade             string
-	DryRun              string
-	FieldSelector       string
-	Filename            []string
-	Force               bool
-	GracePeriod         int
-	IgnoreNotFound      bool
-	Interactive         bool
-	Kustomize           string
-	Now                 bool
-	Output              string
-	Raw                 string
-	Recursive           bool
-	Selector            string
-	Timeout             time.Duration
-	Wait                bool
+	Client         clientConfig
+	Streams        genericiooptions.IOStreams
+	Arguments      []string
+	All            bool
+	AllNamespaces  bool
+	Cascade        deletionPropagation
+	DryRun         string
+	FieldSelector  string
+	Filename       []string
+	Force          bool
+	GracePeriod    int
+	RequestedGrace int
+	IgnoreNotFound bool
+	Interactive    bool
+	Kustomize      string
+	Now            bool
+	Output         string
+	Raw            string
+	Recursive      bool
+	Selector       string
+	Timeout        time.Duration
+	Wait           bool
 }
 
 func deleteCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[deleteConfig] {
@@ -97,91 +165,178 @@ func deleteCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command
 					From(client)
 			})
 
-			allFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.All))
-			allFlag = allFlag.Description("Delete all resources, in the namespace of the specified resource types.")
+			all := cb.Values.Bool(&cb.Config.All)
+			allFlag := cb.Flags.ValueFor(all)
+			allFlag.Description("Delete all resources, in the namespace of the specified resource types.")
 			allFlag.Long("all").ImplicitValue(true)
 
 			allNamespacesFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.AllNamespaces))
-			allNamespacesFlag = allNamespacesFlag.Description("If present, list the requested object(s) across all namespaces. Namespace in current context is ignored even if specified with --namespace.")
+			allNamespacesFlag.Description("If present, list the requested object(s) across all namespaces. Namespace in current context is ignored even if specified with --namespace.")
 			allNamespacesFlag.Long("all-namespaces").ImplicitValue(true)
 			allNamespacesFlag.Short('A').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
 
-			cascadeFlag := cb.Flags.String(&cb.Config.Cascade)
-			cascadeFlag = cascadeFlag.Description("Must be \"background\", \"orphan\", or \"foreground\". Selects the deletion cascading strategy for the dependents (e.g. Pods created by a ReplicationController). Defaults to background.")
-			cb.Values.Default(cascadeFlag, "background")
-			cascadeFlagLong := cascadeFlag.Long("cascade")
-			cascadeFlagLong.ImplicitValue("background")
+			cascade := cb.Values.Value(&cb.Config.Cascade, deletionPropagationLanguage)
+			backgroundCascade := deletionPropagation{
+				Propagation: v1.DeletePropagationBackground,
+			}
+			cb.Values.Default(cascade, backgroundCascade)
+			cascadeFlag := cb.Flags.ValueFor(cascade)
+			cascadeFlag.Description("Must be \"background\", \"orphan\", or \"foreground\". Selects the deletion cascading strategy for the dependents (e.g. Pods created by a ReplicationController). Defaults to background.")
+			cascadeFlag.Long("cascade").ImplicitValue(backgroundCascade)
 
 			dryRunFlag := cb.Flags.String(&cb.Config.DryRun)
-			dryRunFlag = dryRunFlag.Description("Must be \"none\", \"server\", or \"client\". If client strategy, only print the object that would be sent, without sending it. If server strategy, submit server-side request without persisting the resource.")
+			dryRunFlag.Description("Must be \"none\", \"server\", or \"client\". If client strategy, only print the object that would be sent, without sending it. If server strategy, submit server-side request without persisting the resource.")
 			cb.Values.Default(dryRunFlag, "none")
 			dryRunFlagLong := dryRunFlag.Long("dry-run")
 			dryRunFlagLong.ImplicitValue("unchanged")
 
-			fieldSelectorFlag := cb.Flags.String(&cb.Config.FieldSelector)
-			fieldSelectorFlag = fieldSelectorFlag.Description("Selector (field query) to filter on, supports '=', '==', and '!='.(e.g. --field-selector key1=value1,key2=value2). The server only supports a limited number of field queries per type.")
+			selector := cb.Values.String(&cb.Config.Selector)
+			selectorFlag := cb.Flags.ValueFor(selector)
+			selectorFlag.Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
+			selectorFlag.Long("selector")
+			selectorFlag.Short('l')
+
+			fieldSelector := cb.Values.String(&cb.Config.FieldSelector)
+			fieldSelectorFlag := cb.Flags.ValueFor(fieldSelector)
+			fieldSelectorFlag.Description("Selector (field query) to filter on, supports '=', '==', and '!='.(e.g. --field-selector key1=value1,key2=value2). The server only supports a limited number of field queries per type.")
 			fieldSelectorFlag.Long("field-selector")
 
 			filenameValue := cb.Values.Sequence(&cb.Config.Filename, cli.Value.String())
 			filenameFlag := cb.Flags.Sequence(filenameValue)
-			filenameFlag = filenameFlag.DelimitedBy(",")
-			filenameFlag = filenameFlag.Description("containing the resource to delete.")
+			filenameFlag.DelimitedBy(",")
+			filenameFlag.Description("containing the resource to delete.")
 			filenameFlag.Long("filename")
 			filenameFlag.Short('f')
 
-			forceFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Force))
-			forceFlag = forceFlag.Description("If true, immediately remove resources from API and bypass graceful deletion. Note that immediate deletion of some resources may result in inconsistency or data loss and requires confirmation.")
+			force := cb.Values.Bool(&cb.Config.Force)
+			forceFlag := cb.Flags.ValueFor(force)
+			forceFlag.Description("If true, immediately remove resources from API and bypass graceful deletion. Note that immediate deletion of some resources may result in inconsistency or data loss and requires confirmation.")
 			forceFlag.Long("force").ImplicitValue(true)
 
-			gracePeriodFlag := cb.Flags.Int(&cb.Config.GracePeriod)
-			gracePeriodFlag = gracePeriodFlag.Description("Period of time in seconds given to the resource to terminate gracefully. Ignored if negative. Set to 1 for immediate shutdown. Can only be set to 0 when --force is true (force deletion).")
-			cb.Values.Default(gracePeriodFlag, -1)
+			requestedGrace := cb.Values.Int(&cb.Config.RequestedGrace)
+			cb.Values.Default(requestedGrace, -1)
+			gracePeriodFlag := cb.Flags.ValueFor(requestedGrace)
+			gracePeriodFlag.Description("Period of time in seconds given to the resource to terminate gracefully. Ignored if negative. Set to 1 for immediate shutdown. Can only be set to 0 when --force is true (force deletion).")
 			gracePeriodFlag.Long("grace-period")
 
-			ignoreNotFoundFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.IgnoreNotFound))
-			ignoreNotFoundFlag = ignoreNotFoundFlag.Description("Treat \"resource not found\" as a successful delete. Defaults to \"true\" when --all is specified.")
+			ignoreNotFound := cb.Values.Bool(&cb.Config.IgnoreNotFound)
+			cb.Values.ComputedDefault(ignoreNotFound, cli.Value.ComputedBy(func(_ context.Context, _ *deleteConfig, dependencies cli.Dependencies) (bool, error) {
+				deleteAll, allOK := dependencies.Get(all)
+				selector, selectorOK := dependencies.Get(selector)
+				fieldSelector, fieldSelectorOK := dependencies.Get(fieldSelector)
+				if !allOK || !selectorOK || !fieldSelectorOK {
+					return false, fmt.Errorf("delete selection dependency is unavailable")
+				}
+				return deleteAll || selector != "" || fieldSelector != "", nil
+			}).From(all, selector, fieldSelector))
+			ignoreNotFoundFlag := cb.Flags.ValueFor(ignoreNotFound)
+			ignoreNotFoundFlag.Description("Treat \"resource not found\" as a successful delete. Defaults to \"true\" when --all is specified.")
 			ignoreNotFoundFlag.Long("ignore-not-found").ImplicitValue(true)
-			cb.Access.ValueState(ignoreNotFoundFlag, &cb.Config.IgnoreNotFoundState)
 
-			interactiveFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Interactive))
-			interactiveFlag = interactiveFlag.Description("If true, delete resource only when user confirms.")
+			interactive := cb.Values.Bool(&cb.Config.Interactive)
+			interactiveFlag := cb.Flags.ValueFor(interactive)
+			interactiveFlag.Description("If true, delete resource only when user confirms.")
 			interactiveFlag.Long("interactive").ImplicitValue(true)
 			interactiveFlag.Short('i').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
 
-			kustomizeFlag := cb.Flags.String(&cb.Config.Kustomize)
-			kustomizeFlag = kustomizeFlag.Description("Process a kustomization directory. This flag can't be used together with -f or -R.")
+			kustomize := cb.Values.String(&cb.Config.Kustomize)
+			kustomizeFlag := cb.Flags.ValueFor(kustomize)
+			kustomizeFlag.Description("Process a kustomization directory. This flag can't be used together with -f or -R.")
 			kustomizeFlag.Long("kustomize")
 			kustomizeFlag.Short('k')
 
-			nowFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Now))
-			nowFlag = nowFlag.Description("If true, resources are signaled for immediate shutdown (same as --grace-period=1).")
+			now := cb.Values.Bool(&cb.Config.Now)
+			nowFlag := cb.Flags.ValueFor(now)
+			nowFlag.Description("If true, resources are signaled for immediate shutdown (same as --grace-period=1).")
 			nowFlag.Long("now").ImplicitValue(true)
 
-			outputFlag := cb.Flags.String(&cb.Config.Output)
-			outputFlag = outputFlag.Description("Output mode. Use \"-o name\" for shorter output (resource/name).")
+			output := cb.Values.String(&cb.Config.Output)
+			outputFlag := cb.Flags.ValueFor(output)
+			outputFlag.Description("Output mode. Use \"-o name\" for shorter output (resource/name).")
 			outputFlag.Long("output")
 			outputFlag.Short('o')
 
-			rawFlag := cb.Flags.String(&cb.Config.Raw)
-			rawFlag = rawFlag.Description("Raw URI to DELETE to the server.  Uses the transport specified by the kubeconfig file.")
+			raw := cb.Values.String(&cb.Config.Raw)
+			rawFlag := cb.Flags.ValueFor(raw)
+			rawFlag.Description("Raw URI to DELETE to the server.  Uses the transport specified by the kubeconfig file.")
 			rawFlag.Long("raw")
 
-			recursiveFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Recursive))
-			recursiveFlag = recursiveFlag.Description("Process the directory used in -f, --filename recursively. Useful when you want to manage related manifests organized within the same directory.")
+			recursive := cb.Values.Bool(&cb.Config.Recursive)
+			recursiveFlag := cb.Flags.ValueFor(recursive)
+			recursiveFlag.Description("Process the directory used in -f, --filename recursively. Useful when you want to manage related manifests organized within the same directory.")
 			recursiveFlag.Long("recursive").ImplicitValue(true)
 			recursiveFlag.Short('R').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
 
-			selectorFlag := cb.Flags.String(&cb.Config.Selector)
-			selectorFlag = selectorFlag.Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
-			selectorFlag.Long("selector")
-			selectorFlag.Short('l')
+			deleteAll := cb.When.Equal(all, true)
+			cb.Rule.When(deleteAll).Equal(selector, "")
+			cb.Rule.When(deleteAll).Equal(fieldSelector, "")
+			deleteNow := cb.When.Equal(now, true)
+			cb.Rule.When(deleteNow).Equal(requestedGrace, -1)
+			cb.Rule.When(deleteNow).Equal(force, false)
+			cb.Rule.When(cb.When.Equal(force, true)).AtMost(requestedGrace, 0)
+			rawDelete := cb.When.NotEqual(raw, "")
+			cb.Rule.Check("kubectl-delete-source", func(_ context.Context, cfg *deleteConfig, _ cli.Dependencies) (bool, error) {
+				if cfg.Raw != "" {
+					return true, nil
+				}
+				hasFilename := len(cfg.Filename) > 0
+				hasKustomize := cfg.Kustomize != ""
+				if hasFilename && hasKustomize {
+					return false, nil
+				}
+				return len(cfg.Arguments) > 0 || hasFilename || hasKustomize, nil
+			}).
+				DependsOn(raw.OptionalDependency()).
+				DependsOn(arguments.OptionalDependency()).
+				DependsOn(filenameValue.OptionalDependency()).
+				DependsOn(kustomize.OptionalDependency())
+			cb.Rule.When(cb.When.Equal(recursive, true)).Equal(kustomize, "")
+			cb.Rule.When(rawDelete).Equal(recursive, false)
+			cb.Rule.When(rawDelete).Equal(output, "")
+			cb.Rule.When(rawDelete).Equal(interactive, false)
+			cb.Rule.When(rawDelete).ItemCount(filenameValue, cli.Count.Between(0, 1))
+			cb.Rule.In(output, "", "name")
+			cb.Rule.Check("kubectl-delete-raw-uri", func(_ context.Context, cfg *deleteConfig, _ cli.Dependencies) (bool, error) {
+				if cfg.Raw == "" {
+					return true, nil
+				}
+				_, err := url.ParseRequestURI(cfg.Raw)
+				return err == nil, nil
+			}).DependsOn(raw.OptionalDependency())
+			cb.Rule.Check("kubectl-delete-raw-filename", func(_ context.Context, cfg *deleteConfig, _ cli.Dependencies) (bool, error) {
+				if cfg.Raw == "" || len(cfg.Filename) == 0 {
+					return true, nil
+				}
+				filename := cfg.Filename[0]
+				return !strings.HasPrefix(filename, "http://") && !strings.HasPrefix(filename, "https://"), nil
+			}).
+				DependsOn(raw.OptionalDependency()).
+				DependsOn(filenameValue.OptionalDependency())
+			cb.Values.Derive(&cb.Config.GracePeriod, cli.Value.ComputedBy(func(_ context.Context, _ *deleteConfig, dependencies cli.Dependencies) (int, error) {
+				gracePeriod, graceOK := dependencies.Get(requestedGrace)
+				forceDelete, forceOK := dependencies.Get(force)
+				deleteNow, nowOK := dependencies.Get(now)
+				if !graceOK || !forceOK || !nowOK {
+					return 0, fmt.Errorf("delete grace-period dependency is unavailable")
+				}
+				if deleteNow {
+					return 1, nil
+				}
+				if gracePeriod == 0 && !forceDelete {
+					return 1, nil
+				}
+				if forceDelete && gracePeriod < 0 {
+					return 0, nil
+				}
+				return gracePeriod, nil
+			}).From(requestedGrace, force, now))
 
 			timeoutFlag := cb.Flags.Value(&cb.Config.Timeout, durationLanguage())
-			timeoutFlag = timeoutFlag.Description("The length of time to wait before giving up on a delete, zero means determine a timeout from the size of the object")
+			timeoutFlag.Description("The length of time to wait before giving up on a delete, zero means determine a timeout from the size of the object")
 			timeoutFlag.Long("timeout")
 
 			waitFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Wait))
-			waitFlag = waitFlag.Description("If true, wait for resources to be gone before returning. This waits for finalizers.")
+			waitFlag.Description("If true, wait for resources to be gone before returning. This waits for finalizers.")
 			cb.Values.Default(waitFlag, true)
 			waitFlag.Long("wait").ImplicitValue(true)
 		},

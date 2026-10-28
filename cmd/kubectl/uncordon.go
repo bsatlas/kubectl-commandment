@@ -42,14 +42,17 @@ func uncordonCommand(client cli.Destination[rootConfig, clientConfig]) cli.Comma
 			})
 
 			dryRunFlag := cb.Flags.String(&cb.Config.DryRun)
-			dryRunFlag = dryRunFlag.Description("Must be \"none\", \"server\", or \"client\". If client strategy, only print the object that would be sent, without sending it. If server strategy, submit server-side request without persisting the resource.")
+			dryRunFlag.Description("Must be \"none\", \"server\", or \"client\". If client strategy, only print the object that would be sent, without sending it. If server strategy, submit server-side request without persisting the resource.")
 			cb.Values.Default(dryRunFlag, "none")
 			dryRunFlag.Long("dry-run").ImplicitValue("unchanged")
 
 			selectorFlag := cb.Flags.String(&cb.Config.Selector)
-			selectorFlag = selectorFlag.Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
+			selectorFlag.Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
 			selectorFlag.Long("selector")
 			selectorFlag.Short('l')
+
+			cb.Rule.AtLeastOne(arguments, selectorFlag)
+			cb.Rule.When(cb.When.NotEqual(selectorFlag.Destination(), "")).Forbid(arguments)
 		},
 		Run: runUncordon,
 	}
