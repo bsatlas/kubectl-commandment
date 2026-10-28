@@ -37,26 +37,23 @@ type cpConfig struct {
 	Retries     int
 }
 
-func copyFileSpecLanguage() cli.ValueCodec[copyFileSpec] {
-	language := cli.ValueCodec[copyFileSpec]{
-		Name: "kubectl-copy-file-spec",
-		Parse: func(value string) (copyFileSpec, error) {
-			fileSpec, err := parseCopyFileSpec(value)
-			if err != nil {
-				return copyFileSpec{}, cli.Rejection.Message(
-					"file-spec",
-					err.Error(),
-					cli.Rejection.At(0, 0, len(value)),
-				)
-			}
-			return fileSpec, nil
-		},
-		Format: func(value copyFileSpec) string { return value.String() },
-		Snapshot: func(value copyFileSpec) copyFileSpec {
-			return value
-		},
-	}
-	return language
+var copyFileSpecLanguage = cli.ValueCodec[copyFileSpec]{
+	Name: "kubectl-copy-file-spec",
+	Parse: func(value string) (copyFileSpec, error) {
+		fileSpec, err := parseCopyFileSpec(value)
+		if err != nil {
+			return copyFileSpec{}, cli.Rejection.Message(
+				"file-spec",
+				err.Error(),
+				cli.Rejection.At(0, 0, len(value)),
+			)
+		}
+		return fileSpec, nil
+	},
+	Format: func(value copyFileSpec) string { return value.String() },
+	Snapshot: func(value copyFileSpec) copyFileSpec {
+		return value
+	},
 }
 
 func parseCopyFileSpec(value string) (copyFileSpec, error) {
@@ -137,12 +134,12 @@ func cpCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[cpC
 			cb.Access.Stderr(&cb.Config.Streams.ErrOut)
 			var source, destination cli.Destination[cpConfig, copyFileSpec]
 			cb.Arguments.Form(func(form *cli.ArgumentFormBuilder[cpConfig]) {
-				sourceArgument := form.Value(&form.Config.Source, "file-spec-src", copyFileSpecLanguage())
+				sourceArgument := form.Value(&form.Config.Source, "file-spec-src", copyFileSpecLanguage)
 				source = sourceArgument.Destination()
 				sourceArgument.CompleteBy(completeCopySource).
 					From(client).
 					FallbackTo(cli.CompletionNativeFiles)
-				destinationArgument := form.Value(&form.Config.Destination, "file-spec-dest", copyFileSpecLanguage())
+				destinationArgument := form.Value(&form.Config.Destination, "file-spec-dest", copyFileSpecLanguage)
 				destination = destinationArgument.Destination()
 				destinationArgument.CompleteWith(cli.CompletionNativeFiles)
 			})
@@ -154,13 +151,16 @@ func cpCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[cpC
 				DependsOn(source).
 				DependsOn(destination)
 			containerFlag := cb.Flags.String(&cb.Config.Container)
+			cb.Values.ResolveWith(containerFlag, cli.Value.KeepLast())
 			containerFlag.Description("Container name. If omitted, use the kubectl.kubernetes.io/default-container annotation for selecting the container to be attached or the first container in the pod will be chosen")
 			containerFlag.Long("container")
 			containerFlag.Short('c')
 			noPreserveFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.NoPreserve))
+			cb.Values.ResolveWith(noPreserveFlag, cli.Value.KeepLast())
 			noPreserveFlag.Description("The copied file/directory's ownership and permissions will not be preserved in the container")
 			noPreserveFlag.Long("no-preserve").ImplicitValue(true)
 			retriesFlag := cb.Flags.Int(&cb.Config.Retries)
+			cb.Values.ResolveWith(retriesFlag, cli.Value.KeepLast())
 			retriesFlag.Description("Set number of retries to complete a copy operation from a container. Specify 0 to disable or any negative value for infinite retrying. The default is 0 (no retry).")
 			retriesFlag.Long("retries")
 		},

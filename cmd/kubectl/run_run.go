@@ -128,7 +128,7 @@ func runRun(ctx context.Context, cfg *runConfig) error {
 	}
 
 	printFlags := genericclioptions.NewPrintFlags("created").WithTypeSetter(scheme.Scheme)
-	configurePrintFlags(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
+	configurePrintFlagsWithOutputState(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields, cfg.OutputState)
 	printObject, err := printObject(printFlags, cfg.DryRunStrategy, cfg.Streams.Out)
 	if err != nil {
 		return err
@@ -151,7 +151,7 @@ func runRun(ctx context.Context, cfg *runConfig) error {
 		return err
 	}
 	deleteFlags := delete.NewDeleteFlags("to use to replace the resource.")
-	*deleteFlags.CascadingStrategy = cfg.Cascade
+	*deleteFlags.CascadingStrategy = "background"
 	*deleteFlags.Force = cfg.Force
 	*deleteFlags.GracePeriod = cfg.GracePeriod
 	*deleteFlags.Timeout = cfg.Timeout
@@ -162,6 +162,10 @@ func runRun(ctx context.Context, cfg *runConfig) error {
 	deleteOptions, err := deleteFlags.ToOptions(dynamicClient, cfg.Streams)
 	if err != nil {
 		return err
+	}
+	deleteOptions.CascadingStrategy = metav1.DeletionPropagation(cfg.Cascade.Strategy)
+	if cfg.Cascade.Deprecated {
+		fmt.Fprintf(cfg.Streams.ErrOut, "warning: --cascade=%v is deprecated (boolean value) and can be replaced with --cascade=%s.\n", cfg.Cascade.Source, cfg.Cascade.Strategy)
 	}
 	deleteOptions.IgnoreNotFound = true
 	deleteOptions.WaitForDeletion = false
@@ -227,7 +231,7 @@ func (creator runObjectCreator) create(object, overrideData runtime.Object) (*ru
 	}
 
 	if overrideData != nil && cfg.Overrides != "" {
-		object, err = applyOverrides(object, overrideData, cfg.Overrides, cfg.OverrideType)
+		object, err = applyOverrides(object, overrideData, cfg.Overrides, string(cfg.OverrideType))
 		if err != nil {
 			return nil, err
 		}

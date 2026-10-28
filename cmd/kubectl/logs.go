@@ -33,40 +33,37 @@ type logsConfig struct {
 	Timestamps                   bool
 }
 
-func logSinceTimeLanguage() cli.ValueCodec[*time.Time] {
-	language := cli.ValueCodec[*time.Time]{
-		Name: "kubectl-rfc3339-time",
-		Parse: func(value string) (*time.Time, error) {
-			if value == "" {
-				return nil, nil
-			}
-			parsed, err := time.Parse(time.RFC3339Nano, value)
-			if err != nil {
-				parsed, err = time.Parse(time.RFC3339, value)
-			}
-			if err != nil {
-				return nil, cli.Rejection.Message(
-					"rfc3339-time",
-					err.Error(),
-					cli.Rejection.At(0, 0, len(value)),
-				)
-			}
-			return &parsed, nil
-		},
-		Format: func(value *time.Time) string {
-			if value == nil {
-				return ""
-			}
-			return value.Format(time.RFC3339Nano)
-		},
-		Snapshot: func(value *time.Time) *time.Time {
-			if value == nil {
-				return nil
-			}
-			return new(*value)
-		},
-	}
-	return language
+var logSinceTimeLanguage = cli.ValueCodec[*time.Time]{
+	Name: "kubectl-rfc3339-time",
+	Parse: func(value string) (*time.Time, error) {
+		if value == "" {
+			return nil, nil
+		}
+		parsed, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil {
+			parsed, err = time.Parse(time.RFC3339, value)
+		}
+		if err != nil {
+			return nil, cli.Rejection.Message(
+				"rfc3339-time",
+				err.Error(),
+				cli.Rejection.At(0, 0, len(value)),
+			)
+		}
+		return &parsed, nil
+	},
+	Format: func(value *time.Time) string {
+		if value == nil {
+			return ""
+		}
+		return value.Format(time.RFC3339Nano)
+	},
+	Snapshot: func(value *time.Time) *time.Time {
+		if value == nil {
+			return nil
+		}
+		return new(*value)
+	},
 }
 
 func logsCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[logsConfig] {
@@ -177,56 +174,71 @@ func logsCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[l
 			})
 			allContainers := cb.Values.Bool(&cb.Config.AllContainers)
 			allContainersFlag := cb.Flags.ValueFor(allContainers)
+			cb.Values.ResolveWith(allContainersFlag, cli.Value.KeepLast())
 			allContainersFlag.Description("Get all containers' logs in the pod(s).")
 			allContainersFlag.Long("all-containers").ImplicitValue(true)
 			allPods := cb.Values.Bool(&cb.Config.AllPods)
 			allPodsFlag := cb.Flags.ValueFor(allPods)
+			cb.Values.ResolveWith(allPodsFlag, cli.Value.KeepLast())
 			allPodsFlag.Description("Get logs from all pod(s). Sets prefix to true.")
 			allPodsFlag.Long("all-pods").ImplicitValue(true)
 			containerFlag := cb.Flags.String(&cb.Config.Container)
+			cb.Values.ResolveWith(containerFlag, cli.Value.KeepLast())
 			containerFlag.Description("Print the logs of this container")
 			containerFlag.Long("container")
 			containerFlag.Short('c')
 			followFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Follow))
+			cb.Values.ResolveWith(followFlag, cli.Value.KeepLast())
 			followFlag.Description("Specify if the logs should be streamed.")
 			followFlag.Long("follow").ImplicitValue(true)
 			followFlag.Short('f').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
 			ignoreErrorsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.IgnoreErrors))
+			cb.Values.ResolveWith(ignoreErrorsFlag, cli.Value.KeepLast())
 			ignoreErrorsFlag.Description("If watching / following pod logs, allow for any errors that occur to be non-fatal")
 			ignoreErrorsFlag.Long("ignore-errors").ImplicitValue(true)
 			insecureSkipTLSVerifyBackendFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.InsecureSkipTLSVerifyBackend))
+			cb.Values.ResolveWith(insecureSkipTLSVerifyBackendFlag, cli.Value.KeepLast())
 			insecureSkipTLSVerifyBackendFlag.Description("Skip verifying the identity of the kubelet that logs are requested from.  In theory, an attacker could provide invalid log content back. You might want to use this if your kubelet serving certificates have expired.")
 			insecureSkipTLSVerifyBackendFlag.Long("insecure-skip-tls-verify-backend").ImplicitValue(true)
 			limitBytesFlag := cb.Flags.Value(&cb.Config.LimitBytes, int64Language())
+			cb.Values.ResolveWith(limitBytesFlag, cli.Value.KeepLast())
 			limitBytesFlag.Description("Maximum bytes of logs to return. Defaults to no limit.")
 			limitBytesFlag.Long("limit-bytes")
 			maxLogRequestsFlag := cb.Flags.Int(&cb.Config.MaxLogRequests)
+			cb.Values.ResolveWith(maxLogRequestsFlag, cli.Value.KeepLast())
 			maxLogRequestsFlag.Description("Specify maximum number of concurrent logs to follow when using by a selector. Defaults to 5.")
 			cb.Values.Default(maxLogRequestsFlag, 5)
 			maxLogRequestsFlag.Long("max-log-requests")
 			podRunningTimeoutFlag := cb.Flags.Value(&cb.Config.PodRunningTimeout, durationLanguage())
+			cb.Values.ResolveWith(podRunningTimeoutFlag, cli.Value.KeepLast())
 			podRunningTimeoutFlag.Description("The length of time (like 5s, 2m, or 3h, higher than zero) to wait until at least one pod is running")
 			cb.Values.Default(podRunningTimeoutFlag, 20*time.Second)
 			podRunningTimeoutFlag.Long("pod-running-timeout")
 			prefix := cb.Values.Bool(&cb.Config.Prefix)
 			prefixFlag := cb.Flags.ValueFor(prefix)
+			cb.Values.ResolveWith(prefixFlag, cli.Value.KeepLast())
 			prefixFlag.Description("Prefix each log line with the log source (pod name and container name)")
 			prefixFlag.Long("prefix").ImplicitValue(true)
 			previousFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Previous))
+			cb.Values.ResolveWith(previousFlag, cli.Value.KeepLast())
 			previousFlag.Description("If true, print the logs for the previous instance of the container in a pod if it exists.")
 			previousFlag.Long("previous").ImplicitValue(true)
 			previousFlag.Short('p').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
 			selectorFlag := cb.Flags.String(&cb.Config.Selector)
+			cb.Values.ResolveWith(selectorFlag, cli.Value.KeepLast())
 			selectorFlag.Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
 			selectorFlag.Long("selector")
 			selectorFlag.Short('l')
 			sinceFlag := cb.Flags.Value(&cb.Config.Since, durationLanguage())
+			cb.Values.ResolveWith(sinceFlag, cli.Value.KeepLast())
 			sinceFlag.Description("Only return logs newer than a relative duration like 5s, 2m, or 3h. Defaults to all logs. Only one of since-time / since may be used.")
 			sinceFlag.Long("since")
-			sinceTimeFlag := cb.Flags.Value(&cb.Config.SinceTime, logSinceTimeLanguage())
+			sinceTimeFlag := cb.Flags.Value(&cb.Config.SinceTime, logSinceTimeLanguage)
+			cb.Values.ResolveWith(sinceTimeFlag, cli.Value.KeepLast())
 			sinceTimeFlag.Description("Only return logs after a specific date (RFC3339). Defaults to all logs. Only one of since-time / since may be used.")
 			sinceTimeFlag.Long("since-time")
 			tailFlag := cb.Flags.Value(&cb.Config.Tail, int64Language())
+			cb.Values.ResolveWith(tailFlag, cli.Value.KeepLast())
 			tailFlag.Description("Lines of recent log file to display. Defaults to -1 with no selector, showing all log lines otherwise 10, if a selector is provided.")
 			cb.Values.ComputedDefault(
 				tailFlag.Destination(),
@@ -276,6 +288,7 @@ func logsCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[l
 			cb.Rule.AtLeast(tailFlag.Destination(), int64(-1))
 			cb.Rule.GreaterThan(podRunningTimeoutFlag.Destination(), time.Duration(0))
 			timestampsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Timestamps))
+			cb.Values.ResolveWith(timestampsFlag, cli.Value.KeepLast())
 			timestampsFlag.Description("Include timestamps on each line in the log output")
 			timestampsFlag.Long("timestamps").ImplicitValue(true)
 		},

@@ -33,84 +33,78 @@ type portForwardConfig struct {
 	PodRunningTimeout time.Duration
 }
 
-func portForwardPortLanguage() cli.ValueCodec[portForwardPort] {
-	language := cli.ValueCodec[portForwardPort]{
-		Name: "kubectl-port-forward-port",
-		Parse: func(value string) (portForwardPort, error) {
-			parts := strings.Split(value, ":")
-			if len(parts) > 2 {
-				return portForwardPort{}, cli.Rejection.Message(
-					"port-forward-port",
-					fmt.Sprintf("invalid port format %q", value),
-					cli.Rejection.At(0, 0, len(value)),
-				)
-			}
-			port := portForwardPort{
-				Local:  parts[0],
-				Remote: parts[0],
-			}
-			if len(parts) == 2 {
-				port.Remote = parts[1]
-				port.ExplicitLocal = true
-			}
-			if port.Remote == "" {
-				return portForwardPort{}, cli.Rejection.Message(
-					"port-forward-port",
-					"remote port cannot be empty",
-					cli.Rejection.At(0, 0, len(value)),
-				)
-			}
-			if port.ExplicitLocal && port.Local != "" && port.Local != port.Remote {
-				if _, err := strconv.ParseUint(port.Local, 10, 16); err != nil {
-					return portForwardPort{}, cli.Rejection.Message(
-						"port-forward-port",
-						fmt.Sprintf("error parsing local port %q: %s", port.Local, err),
-						cli.Rejection.At(0, 0, len(value)),
-					)
-				}
-			}
-			if strings.Trim(port.Remote, "0123456789") == "" {
-				number, err := strconv.ParseUint(port.Remote, 10, 16)
-				if err != nil {
-					return portForwardPort{}, cli.Rejection.Message(
-						"port-forward-port",
-						fmt.Sprintf("error parsing remote port %q: %s", port.Remote, err),
-						cli.Rejection.At(0, 0, len(value)),
-					)
-				}
-				if number == 0 {
-					return portForwardPort{}, cli.Rejection.Message(
-						"port-forward-port",
-						"remote port must be > 0",
-						cli.Rejection.At(0, 0, len(value)),
-					)
-				}
-			}
-			return port, nil
-		},
-		Format:   func(value portForwardPort) string { return value.String() },
-		Snapshot: func(value portForwardPort) portForwardPort { return value },
-	}
-	return language
-}
-
-func portForwardAddressLanguage() cli.ValueCodec[string] {
-	language := cli.ValueCodec[string]{
-		Name: "kubectl-port-forward-address",
-		Parse: func(value string) (string, error) {
-			if value == "localhost" || net.ParseIPSloppy(value) != nil {
-				return value, nil
-			}
-			return "", cli.Rejection.Message(
-				"port-forward-address",
-				fmt.Sprintf("%s is not a valid IP", value),
+var portForwardPortLanguage = cli.ValueCodec[portForwardPort]{
+	Name: "kubectl-port-forward-port",
+	Parse: func(value string) (portForwardPort, error) {
+		parts := strings.Split(value, ":")
+		if len(parts) > 2 {
+			return portForwardPort{}, cli.Rejection.Message(
+				"port-forward-port",
+				fmt.Sprintf("invalid port format %q", value),
 				cli.Rejection.At(0, 0, len(value)),
 			)
-		},
-		Format:   func(value string) string { return value },
-		Snapshot: func(value string) string { return value },
-	}
-	return language
+		}
+		port := portForwardPort{
+			Local:  parts[0],
+			Remote: parts[0],
+		}
+		if len(parts) == 2 {
+			port.Remote = parts[1]
+			port.ExplicitLocal = true
+		}
+		if port.Remote == "" {
+			return portForwardPort{}, cli.Rejection.Message(
+				"port-forward-port",
+				"remote port cannot be empty",
+				cli.Rejection.At(0, 0, len(value)),
+			)
+		}
+		if port.ExplicitLocal && port.Local != "" && port.Local != port.Remote {
+			if _, err := strconv.ParseUint(port.Local, 10, 16); err != nil {
+				return portForwardPort{}, cli.Rejection.Message(
+					"port-forward-port",
+					fmt.Sprintf("error parsing local port %q: %s", port.Local, err),
+					cli.Rejection.At(0, 0, len(value)),
+				)
+			}
+		}
+		if strings.Trim(port.Remote, "0123456789") == "" {
+			number, err := strconv.ParseUint(port.Remote, 10, 16)
+			if err != nil {
+				return portForwardPort{}, cli.Rejection.Message(
+					"port-forward-port",
+					fmt.Sprintf("error parsing remote port %q: %s", port.Remote, err),
+					cli.Rejection.At(0, 0, len(value)),
+				)
+			}
+			if number == 0 {
+				return portForwardPort{}, cli.Rejection.Message(
+					"port-forward-port",
+					"remote port must be > 0",
+					cli.Rejection.At(0, 0, len(value)),
+				)
+			}
+		}
+		return port, nil
+	},
+	Format:   func(value portForwardPort) string { return value.String() },
+	Snapshot: func(value portForwardPort) portForwardPort { return value },
+}
+
+var portForwardAddressLanguage = cli.ValueCodec[string]{
+	Name: "kubectl-port-forward-address",
+	Parse: func(value string) (string, error) {
+		if value == "localhost" || net.ParseIPSloppy(value) != nil {
+			return value, nil
+		}
+		return "", cli.Rejection.Message(
+			"port-forward-address",
+			fmt.Sprintf("%s is not a valid IP", value),
+			cli.Rejection.At(0, 0, len(value)),
+		)
+	},
+	Format:   func(value string) string { return value },
+	Snapshot: func(value string) string { return value },
 }
 
 func portForwardCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[portForwardConfig] {
@@ -155,7 +149,7 @@ func portForwardCommand(client cli.Destination[rootConfig, clientConfig]) cli.Co
 			cb.Access.Stdin(&cb.Config.Streams.In)
 			cb.Access.Stdout(&cb.Config.Streams.Out)
 			cb.Access.Stderr(&cb.Config.Streams.ErrOut)
-			ports := cb.Values.Sequence(&cb.Config.Ports, portForwardPortLanguage())
+			ports := cb.Values.Sequence(&cb.Config.Ports, portForwardPortLanguage)
 			cb.Arguments.Form(func(form *cli.ArgumentFormBuilder[portForwardConfig]) {
 				completion := resourceAndPortArgumentCompleter(func(cfg *portForwardConfig) (clientConfig, []string) {
 					arguments := make([]string, 0, 1+len(cfg.Ports))
@@ -170,13 +164,14 @@ func portForwardCommand(client cli.Destination[rootConfig, clientConfig]) cli.Co
 				form.String(&form.Config.Resource, "TYPE/NAME").CompleteBy(completion).From(client)
 				form.Sequence(ports, "PORT", cli.Count.OneOrMore()).CompleteBy(completion).From(client)
 			})
-			addressValue := cb.Values.Sequence(&cb.Config.Address, portForwardAddressLanguage())
+			addressValue := cb.Values.Sequence(&cb.Config.Address, portForwardAddressLanguage)
 			addressFlag := cb.Flags.Sequence(addressValue)
 			addressFlag.DelimitedBy(",")
 			addressFlag.Description("Addresses to listen on (comma separated). Only accepts IP addresses or localhost as a value. When localhost is supplied, kubectl will try to bind on both 127.0.0.1 and ::1 and will fail if neither of these addresses are available to bind.")
 			cb.Values.Default(addressFlag, []string{"localhost"})
 			addressFlag.Long("address")
 			podRunningTimeoutFlag := cb.Flags.Value(&cb.Config.PodRunningTimeout, durationLanguage())
+			cb.Values.ResolveWith(podRunningTimeoutFlag, cli.Value.KeepLast())
 			podRunningTimeoutFlag.Description("The length of time (like 5s, 2m, or 3h, higher than zero) to wait until at least one pod is running")
 			cb.Values.Default(podRunningTimeoutFlag, time.Minute)
 			podRunningTimeoutFlag.Long("pod-running-timeout")
