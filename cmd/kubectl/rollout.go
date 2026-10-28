@@ -7,7 +7,7 @@ func rolloutCommand(client cli.Destination[rootConfig, clientConfig]) cli.Comman
 		Name: "rollout",
 		Description: cli.Description{
 			Short: "Manage the rollout of a resource",
-			Long:  "Manage the rollout of one or many resources.\n        \n Valid resource types include:\n\n  *  deployments\n  *  daemonsets\n  *  statefulsets",
+			Long:  "Manage the rollout of one or many resources.\n\nValid resource types include:\n\n  * deployments\n  * daemonsets\n  * statefulsets",
 		},
 		Examples: []cli.Example{
 			{
