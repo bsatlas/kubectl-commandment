@@ -7,11 +7,12 @@ import (
 	"k8s.io/api/certificates/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/cli-runtime/pkg/resource"
 	"k8s.io/kubectl/pkg/scheme"
 )
+
+const certificateConditionConflictRetries = 10
 
 type certificateConditionChange struct {
 	forbidden v1.RequestConditionType
@@ -41,33 +42,33 @@ func runCertificateDeny(ctx context.Context, cfg *certificateConditionConfig) er
 }
 
 func modifyCertificateCondition(ctx context.Context, cfg *certificateConditionConfig, change certificateConditionChange) error {
-	if len(cfg.Arguments) == 0 && len(cfg.Filename) == 0 && cfg.Kustomize == "" {
-		return fmt.Errorf("one or more CSRs must be specified as <name> or -f <filename>")
-	}
-
-	getter := restClientGetter(cfg.Client)
-	clientset, err := cfg.Client.factory().KubernetesClientSet()
+	factory := cfg.Client.factory()
+	clientset, err := factory.KubernetesClientSet()
 	if err != nil {
 		return err
 	}
 	filenameOptions := resource.FilenameOptions{
-		Filenames: append([]string(nil), cfg.Filename...),
+		Filenames: cfg.Filename,
 		Kustomize: cfg.Kustomize,
 		Recursive: cfg.Recursive,
 	}
-	printFlags := genericclioptions.NewPrintFlags(conditionLabel(change.condition)).WithTypeSetter(scheme.Scheme)
+	operation := "denied"
+	if change.condition == v1.CertificateApproved {
+		operation = "approved"
+	}
+	printFlags := genericclioptions.NewPrintFlags(operation).WithTypeSetter(scheme.Scheme)
 	configurePrintFlags(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
 	printer, err := printFlags.ToPrinter()
 	if err != nil {
 		return err
 	}
 
-	found := 0
-	result := resource.NewBuilder(getter).
+	var found int
+	result := factory.NewBuilder().
 		Unstructured().
 		ContinueOnError().
 		FilenameParam(false, &filenameOptions).
-		ResourceNames("certificatesigningrequests", cfg.Arguments...).
+		ResourceNames("certificatesigningrequests", cfg.Names...).
 		RequireObject(true).
 		Flatten().
 		Latest().
@@ -84,20 +85,20 @@ func modifyCertificateCondition(ctx context.Context, cfg *certificateConditionCo
 			if want, got := v1.Kind("CertificateSigningRequest"), object.GetObjectKind().GroupVersionKind().GroupKind(); want != got {
 				return fmt.Errorf("can only handle %s objects, got %s", want.String(), got.String())
 			}
-			request, err := getCertificateSigningRequest(ctx, clientset, object.GetName())
+			request, err := clientset.CertificatesV1().CertificateSigningRequests().Get(ctx, object.GetName(), getOptions())
 			if errors.IsNotFound(err) {
 				return fmt.Errorf("could not find v1 version of %s: %v", object.GetName(), err)
 			}
 			if err != nil {
 				return err
 			}
-			changed, already, err := addCertificateCondition(request, change)
+			already, err := addCertificateCondition(request, change)
 			if err != nil {
 				return err
 			}
 			if !already || cfg.Force {
-				err = updateCertificateSigningRequestApproval(ctx, clientset, changed)
-				if errors.IsConflict(err) && attempt < 10 {
+				_, err = clientset.CertificatesV1().CertificateSigningRequests().UpdateApproval(ctx, request.Name, request, updateOptions())
+				if errors.IsConflict(err) && attempt < certificateConditionConflictRetries {
 					if err := info.Get(); err != nil {
 						return err
 					}
@@ -110,44 +111,34 @@ func modifyCertificateCondition(ctx context.Context, cfg *certificateConditionCo
 			break
 		}
 		found++
-		return printer.PrintObj(info.Object, cfg.Streams.Out)
+		return printer.PrintObj(info.Object, cfg.Stdout)
 	})
 	if found == 0 && err == nil {
-		_, _ = fmt.Fprintln(cfg.Streams.Out, "No resources found")
+		_, _ = fmt.Fprintln(cfg.Stdout, "No resources found")
 	}
 	return err
 }
 
-func addCertificateCondition(object runtime.Object, change certificateConditionChange) (*v1.CertificateSigningRequest, bool, error) {
-	request, ok := object.(*v1.CertificateSigningRequest)
-	if !ok {
-		return nil, false, fmt.Errorf("can only handle certificates.k8s.io CertificateSigningRequest objects, got %T", object)
-	}
-	already := false
+func addCertificateCondition(request *v1.CertificateSigningRequest, change certificateConditionChange) (bool, error) {
+	var already bool
 	for _, existing := range request.Status.Conditions {
 		if existing.Type == change.forbidden {
-			return nil, false, fmt.Errorf("certificate signing request %q is already %s", request.Name, existing.Type)
+			return false, fmt.Errorf("certificate signing request %q is already %s", request.Name, existing.Type)
 		}
 		if existing.Type == change.condition {
 			already = true
 		}
 	}
 	if already {
-		return request, true, nil
+		return true, nil
 	}
-	request.Status.Conditions = append(request.Status.Conditions, v1.CertificateSigningRequestCondition{
+	condition := v1.CertificateSigningRequestCondition{
 		Type:           change.condition,
 		Status:         "True",
 		Reason:         change.reason,
 		Message:        change.message,
 		LastUpdateTime: metaNow(),
-	})
-	return request, false, nil
-}
-
-func conditionLabel(condition v1.RequestConditionType) string {
-	if condition == v1.CertificateApproved {
-		return "approved"
 	}
-	return "denied"
+	request.Status.Conditions = append(request.Status.Conditions, condition)
+	return false, nil
 }
