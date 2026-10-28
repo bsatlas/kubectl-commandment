@@ -1,8 +1,14 @@
 package main
 
 import (
+	"context"
+	"fmt"
+
 	"github.com/abstractionsinc/commandment/cli"
+	"github.com/distribution/reference"
+	"k8s.io/api/core/v1"
 	"k8s.io/cli-runtime/pkg/genericiooptions"
+	"k8s.io/kubectl/pkg/cmd/debug"
 )
 
 type debugConfig struct {
@@ -12,14 +18,13 @@ type debugConfig struct {
 	Arguments           []string
 	ArgumentsOnly       bool
 	Attach              bool
-	AttachState         cli.OptionalValue[cli.ValueState]
 	Container           string
 	CopyTo              string
 	Custom              string
 	Env                 map[string]string
 	Filename            []string
 	Image               string
-	ImagePullPolicy     string
+	ImagePullPolicy     v1.PullPolicy
 	KeepAnnotations     bool
 	KeepInitContainers  bool
 	KeepLabels          bool
@@ -36,6 +41,83 @@ type debugConfig struct {
 	Stdin               bool
 	Target              string
 	TTY                 bool
+}
+
+func debugOptionalImageLanguage() cli.ValueCodec[string] {
+	language := cli.ValueCodec[string]{
+		Name: "debug-container-image",
+		Parse: func(value string) (string, error) {
+			if value != "" && !reference.ReferenceRegexp.MatchString(value) {
+				return "", cli.Rejection.Message(
+					"container-image",
+					fmt.Sprintf("invalid image name %q", value),
+					cli.Rejection.At(0, 0, len(value)),
+				)
+			}
+			return value, nil
+		},
+		Format:   func(value string) string { return value },
+		Snapshot: func(value string) string { return value },
+	}
+	return language
+}
+
+func debugImageLanguage() cli.ValueCodec[string] {
+	language := cli.ValueCodec[string]{
+		Name: "debug-set-image",
+		Parse: func(value string) (string, error) {
+			if !reference.ReferenceRegexp.MatchString(value) {
+				return "", cli.Rejection.Message(
+					"container-image",
+					fmt.Sprintf("invalid image name %q", value),
+					cli.Rejection.At(0, 0, len(value)),
+				)
+			}
+			return value, nil
+		},
+		Format:   func(value string) string { return value },
+		Snapshot: func(value string) string { return value },
+	}
+	return language
+}
+
+func debugImagePullPolicyLanguage() cli.ValueCodec[v1.PullPolicy] {
+	language := cli.ValueCodec[v1.PullPolicy]{
+		Name: "debug-image-pull-policy",
+		Parse: func(value string) (v1.PullPolicy, error) {
+			policy := v1.PullPolicy(value)
+			switch policy {
+			case "", v1.PullAlways, v1.PullIfNotPresent, v1.PullNever:
+				return policy, nil
+			default:
+				return "", cli.Rejection.Message(
+					"image-pull-policy",
+					fmt.Sprintf("invalid image pull policy: %s", value),
+					cli.Rejection.At(0, 0, len(value)),
+				)
+			}
+		},
+		Format:   func(value v1.PullPolicy) string { return string(value) },
+		Snapshot: func(value v1.PullPolicy) v1.PullPolicy { return value },
+	}
+	return language
+}
+
+func debugProfileLanguage() cli.ValueDomain[string] {
+	language := cli.Value.Domain(
+		cli.Value.Assign[string](),
+		func(values *cli.ValueDomainBuilder[string]) {
+			values.Value(debug.ProfileLegacy, debug.ProfileLegacy).Release(preexistingDeprecation(
+				`--profile=legacy is deprecated and planned to be removed in v1.39; use another profile such as --profile=general`,
+			))
+			values.Value(debug.ProfileGeneral, debug.ProfileGeneral)
+			values.Value(debug.ProfileBaseline, debug.ProfileBaseline)
+			values.Value(debug.ProfileRestricted, debug.ProfileRestricted)
+			values.Value(debug.ProfileNetadmin, debug.ProfileNetadmin)
+			values.Value(debug.ProfileSysadmin, debug.ProfileSysadmin)
+		},
+	)
+	return language
 }
 
 func debugCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[debugConfig] {
@@ -84,7 +166,6 @@ func debugCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[
 			cb.Access.Stdin(&cb.Config.Streams.In)
 			cb.Access.Stdout(&cb.Config.Streams.Out)
 			cb.Access.Stderr(&cb.Config.Streams.ErrOut)
-
 			targets := cb.Values.Sequence(&cb.Config.TargetNames, cli.Value.String())
 			arguments := cb.Values.Sequence(&cb.Config.Arguments, cli.Value.String())
 			cb.Arguments.Form(func(form *cli.ArgumentFormBuilder[debugConfig]) {
@@ -98,118 +179,131 @@ func debugCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[
 					From(client)
 				form.PassThrough(arguments, "COMMAND", cli.Count.ZeroOrMore())
 			})
-
 			argumentsOnlyFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ArgumentsOnly))
-			argumentsOnlyFlag = argumentsOnlyFlag.Description("If specified, everything after -- will be passed to the new container as Args instead of Command.")
+			argumentsOnlyFlag.Description("If specified, everything after -- will be passed to the new container as Args instead of Command.")
 			argumentsOnlyFlag.Long("arguments-only").ImplicitValue(true)
-
 			attachFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Attach))
-			attachFlag = attachFlag.Description("If true, wait for the container to start running, and then attach as if 'kubectl attach ...' were called.  Default false, unless '-i/--stdin' is set, in which case the default is true.")
+			attachFlag.Description("If true, wait for the container to start running, and then attach as if 'kubectl attach ...' were called.  Default false, unless '-i/--stdin' is set, in which case the default is true.")
 			attachFlag.Long("attach").ImplicitValue(true)
-			cb.Access.ValueState(attachFlag, &cb.Config.AttachState)
-
 			containerFlag := cb.Flags.String(&cb.Config.Container)
-			containerFlag = containerFlag.Description("Container name to use for debug container.")
+			containerFlag.Description("Container name to use for debug container.")
 			containerFlag.Long("container")
 			containerFlag.Short('c')
-
 			copyToFlag := cb.Flags.String(&cb.Config.CopyTo)
-			copyToFlag = copyToFlag.Description("Create a copy of the target Pod with this name.")
+			copyToFlag.Description("Create a copy of the target Pod with this name.")
 			copyToFlag.Long("copy-to")
-
 			customFlag := cb.Flags.String(&cb.Config.Custom)
-			customFlag = customFlag.Description("Path to a JSON or YAML file containing a partial container spec to customize built-in debug profiles.")
+			customFlag.Description("Path to a JSON or YAML file containing a partial container spec to customize built-in debug profiles.")
 			customFlag.Long("custom")
-
 			envValue := cb.Values.Keyed(&cb.Config.Env, cli.Value.Keyed(cli.Value.String(), cli.Value.String()))
 			envFlag := cb.Flags.Keyed(envValue)
-			envFlag = envFlag.DelimitedBy(",")
-			envFlag = envFlag.Description("Environment variables to set in the container.")
+			envFlag.DelimitedBy(",")
+			envFlag.Description("Environment variables to set in the container.")
 			envFlag.Long("env")
-
 			filenameValue := cb.Values.Sequence(&cb.Config.Filename, cli.Value.String())
 			filenameFlag := cb.Flags.Sequence(filenameValue)
-			filenameFlag = filenameFlag.DelimitedBy(",")
-			filenameFlag = filenameFlag.Description("identifying the resource to debug")
+			filenameFlag.DelimitedBy(",")
+			filenameFlag.Description("identifying the resource to debug")
 			filenameFlag.Long("filename")
 			filenameFlag.Short('f')
-
-			imageFlag := cb.Flags.String(&cb.Config.Image)
-			imageFlag = imageFlag.Description("Container image to use for debug container.")
+			imageFlag := cb.Flags.Value(&cb.Config.Image, debugOptionalImageLanguage())
+			imageFlag.Description("Container image to use for debug container.")
 			imageFlag.Long("image")
-
-			imagePullPolicyFlag := cb.Flags.String(&cb.Config.ImagePullPolicy)
-			imagePullPolicyFlag = imagePullPolicyFlag.Description("The image pull policy for the container. If left empty, this value will not be specified by the client and defaulted by the server.")
+			imagePullPolicyFlag := cb.Flags.Value(&cb.Config.ImagePullPolicy, debugImagePullPolicyLanguage())
+			imagePullPolicyFlag.Description("The image pull policy for the container. If left empty, this value will not be specified by the client and defaulted by the server.")
 			imagePullPolicyFlag.Long("image-pull-policy")
-
 			keepAnnotationsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.KeepAnnotations))
-			keepAnnotationsFlag = keepAnnotationsFlag.Description("If true, keep the original pod annotations.(This flag only works when used with '--copy-to')")
+			keepAnnotationsFlag.Description("If true, keep the original pod annotations.(This flag only works when used with '--copy-to')")
 			keepAnnotationsFlag.Long("keep-annotations").ImplicitValue(true)
-
 			keepInitContainersFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.KeepInitContainers))
-			keepInitContainersFlag = keepInitContainersFlag.Description("Run the init containers for the pod. Defaults to true.(This flag only works when used with '--copy-to')")
+			keepInitContainersFlag.Description("Run the init containers for the pod. Defaults to true.(This flag only works when used with '--copy-to')")
 			cb.Values.Default(keepInitContainersFlag, true)
 			keepInitContainersFlag.Long("keep-init-containers").ImplicitValue(true)
-
 			keepLabelsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.KeepLabels))
-			keepLabelsFlag = keepLabelsFlag.Description("If true, keep the original pod labels.(This flag only works when used with '--copy-to')")
+			keepLabelsFlag.Description("If true, keep the original pod labels.(This flag only works when used with '--copy-to')")
 			keepLabelsFlag.Long("keep-labels").ImplicitValue(true)
-
 			keepLivenessFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.KeepLiveness))
-			keepLivenessFlag = keepLivenessFlag.Description("If true, keep the original pod liveness probes.(This flag only works when used with '--copy-to')")
+			keepLivenessFlag.Description("If true, keep the original pod liveness probes.(This flag only works when used with '--copy-to')")
 			keepLivenessFlag.Long("keep-liveness").ImplicitValue(true)
-
 			keepReadinessFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.KeepReadiness))
-			keepReadinessFlag = keepReadinessFlag.Description("If true, keep the original pod readiness probes.(This flag only works when used with '--copy-to')")
+			keepReadinessFlag.Description("If true, keep the original pod readiness probes.(This flag only works when used with '--copy-to')")
 			keepReadinessFlag.Long("keep-readiness").ImplicitValue(true)
-
 			keepStartupFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.KeepStartup))
-			keepStartupFlag = keepStartupFlag.Description("If true, keep the original startup probes.(This flag only works when used with '--copy-to')")
+			keepStartupFlag.Description("If true, keep the original startup probes.(This flag only works when used with '--copy-to')")
 			keepStartupFlag.Long("keep-startup").ImplicitValue(true)
-
-			profileFlag := cb.Flags.String(&cb.Config.Profile)
-			profileFlag = profileFlag.Description("Options are \"general\", \"baseline\", \"restricted\", \"netadmin\" or \"sysadmin\". Defaults to \"general\"")
+			profileFlag := cb.Flags.Value(&cb.Config.Profile, debugProfileLanguage())
+			profileFlag.Description("Options are \"general\", \"baseline\", \"restricted\", \"netadmin\" or \"sysadmin\". Defaults to \"general\"")
 			cb.Values.Default(profileFlag, "general")
 			profileFlag.Long("profile")
-
 			quietFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Quiet))
-			quietFlag = quietFlag.Description("If true, suppress informational messages.")
+			quietFlag.Description("If true, suppress informational messages.")
 			quietFlag.Long("quiet").ImplicitValue(true)
 			quietFlag.Short('q').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
-
 			replaceFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Replace))
-			replaceFlag = replaceFlag.Description("When used with '--copy-to', delete the original Pod.")
+			replaceFlag.Description("When used with '--copy-to', delete the original Pod.")
 			replaceFlag.Long("replace").ImplicitValue(true)
-
 			sameNodeFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.SameNode))
-			sameNodeFlag = sameNodeFlag.Description("When used with '--copy-to', schedule the copy of target Pod on the same node.")
+			sameNodeFlag.Description("When used with '--copy-to', schedule the copy of target Pod on the same node.")
 			sameNodeFlag.Long("same-node").ImplicitValue(true)
-
-			setImageValue := cb.Values.Keyed(&cb.Config.SetImage, cli.Value.Keyed(cli.Value.String(), cli.Value.String()))
+			setImageValue := cb.Values.Keyed(&cb.Config.SetImage, cli.Value.Keyed(cli.Value.String(), debugImageLanguage()))
 			setImageFlag := cb.Flags.Keyed(setImageValue)
-			setImageFlag = setImageFlag.DelimitedBy(",")
-			setImageFlag = setImageFlag.Description("When used with '--copy-to', a list of name=image pairs for changing container images, similar to how 'kubectl set image' works.")
+			setImageFlag.DelimitedBy(",")
+			setImageFlag.Description("When used with '--copy-to', a list of name=image pairs for changing container images, similar to how 'kubectl set image' works.")
 			setImageFlag.Long("set-image")
-
 			shareProcessesFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShareProcesses))
-			shareProcessesFlag = shareProcessesFlag.Description("When used with '--copy-to', enable process namespace sharing in the copy.")
+			shareProcessesFlag.Description("When used with '--copy-to', enable process namespace sharing in the copy.")
 			cb.Values.Default(shareProcessesFlag, true)
 			shareProcessesFlag.Long("share-processes").ImplicitValue(true)
 			cb.Access.ValueState(shareProcessesFlag, &cb.Config.ShareProcessesState)
-
 			stdinFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Stdin))
-			stdinFlag = stdinFlag.Description("Keep stdin open on the container(s) in the pod, even if nothing is attached.")
+			stdinFlag.Description("Keep stdin open on the container(s) in the pod, even if nothing is attached.")
 			stdinFlag.Long("stdin").ImplicitValue(true)
 			stdinFlag.Short('i').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
-
 			targetFlag := cb.Flags.String(&cb.Config.Target)
-			targetFlag = targetFlag.Description("When using an ephemeral container, target processes in this container name.")
+			targetFlag.Description("When using an ephemeral container, target processes in this container name.")
 			targetFlag.Long("target")
-
 			ttyFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.TTY))
-			ttyFlag = ttyFlag.Description("Allocate a TTY for the debugging container.")
+			ttyFlag.Description("Allocate a TTY for the debugging container.")
 			ttyFlag.Long("tty").ImplicitValue(true)
 			ttyFlag.Short('t').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
+			cb.Values.ComputedDefault(
+				attachFlag.Destination(),
+				cli.Value.ComputedBy(func(_ context.Context, cfg *debugConfig, _ cli.Dependencies) (bool, error) {
+					return cfg.Stdin, nil
+				}).From(stdinFlag.OptionalDependency()),
+			)
+			copying := cb.When.NotEqual(copyToFlag.Destination(), "")
+			attachExplicit := cb.Rule.All(
+				cb.Rule.ContributedBy(attachFlag, cli.ValueProducerKindFlag),
+				cb.When.Equal(attachFlag.Destination(), true),
+			)
+			cb.Rule.When(attachExplicit).Check("kubectl-debug-attach-target", func(_ context.Context, cfg *debugConfig, _ cli.Dependencies) (bool, error) {
+				return cfg.Image != "" || cfg.Container != "", nil
+			}).
+				DependsOn(imageFlag.OptionalDependency()).
+				DependsOn(containerFlag.OptionalDependency())
+			cb.Rule.When(copying).Check("kubectl-debug-copy-input", func(_ context.Context, cfg *debugConfig, _ cli.Dependencies) (bool, error) {
+				return cfg.Image != "" || len(cfg.SetImage) != 0 || len(cfg.Arguments) != 0, nil
+			}).
+				DependsOn(imageFlag.OptionalDependency()).
+				DependsOn(setImageValue.OptionalDependency()).
+				DependsOn(arguments.OptionalDependency())
+			cb.Rule.When(copying).Check("kubectl-debug-copy-arguments-target", func(_ context.Context, cfg *debugConfig, _ cli.Dependencies) (bool, error) {
+				return len(cfg.Arguments) == 0 || cfg.Container != "" || cfg.Image != "", nil
+			}).
+				DependsOn(arguments.OptionalDependency()).
+				DependsOn(containerFlag.OptionalDependency()).
+				DependsOn(imageFlag.OptionalDependency())
+			cb.Rule.Unless(copying).Forbid(replaceFlag.Destination())
+			cb.Rule.Unless(copying).Forbid(sameNodeFlag.Destination())
+			cb.Rule.Unless(copying).Forbid(setImageValue)
+			cb.Rule.Unless(copying).Require(imageFlag.Destination())
+			cb.Rule.Unless(copying).NotEmpty(imageFlag.Destination())
+			cb.Rule.AtLeastOne(targets, filenameValue)
+			cb.Rule.When(copying).Equal(targetFlag.Destination(), "")
+			cb.Rule.When(cb.When.Equal(ttyFlag.Destination(), true)).Check("kubectl-debug-tty-stdin", func(_ context.Context, cfg *debugConfig, _ cli.Dependencies) (bool, error) {
+				return cfg.Stdin, nil
+			}).DependsOn(stdinFlag.OptionalDependency())
 		},
 		Run: runDebug,
 	}

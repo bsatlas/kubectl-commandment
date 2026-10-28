@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"strings"
 
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -15,10 +14,6 @@ import (
 )
 
 func runPortForward(ctx context.Context, cfg *portForwardConfig) error {
-	if len(cfg.Arguments) < 2 {
-		return fmt.Errorf("TYPE/NAME and list of ports are required for port-forward")
-	}
-
 	factory := cfg.Client.factory()
 	namespace, _, err := factory.ToRawKubeConfigLoader().Namespace()
 	if err != nil {
@@ -28,7 +23,7 @@ func runPortForward(ctx context.Context, cfg *portForwardConfig) error {
 		WithScheme(scheme.Scheme, scheme.Scheme.PrioritizedVersionsAllGroups()...).
 		ContinueOnError().
 		NamespaceParam(namespace).DefaultNamespace().
-		ResourceNames("pods", cfg.Arguments[0])
+		ResourceNames("pods", cfg.Resource)
 	object, err := builder.Do().Object()
 	if err != nil {
 		return err
@@ -38,23 +33,24 @@ func runPortForward(ctx context.Context, cfg *portForwardConfig) error {
 		return err
 	}
 
-	ports := cfg.Arguments[1:]
+	ports := cfg.Ports
+	var forwardPorts []string
 	switch object := object.(type) {
 	case *v1.Service:
 		if err := rejectUDPServicePorts(ports, object); err != nil {
 			return err
 		}
-		ports, err = serviceForwardPorts(ports, *object, *pod)
+		forwardPorts, err = serviceForwardPorts(ports, *object, *pod)
 	case *v1.Pod:
 		if err := rejectUDPPodPorts(ports, object); err != nil {
 			return err
 		}
-		ports, err = podForwardPorts(ports, *pod)
+		forwardPorts, err = podForwardPorts(ports, *pod)
 	default:
 		if err := rejectUDPPodPorts(ports, pod); err != nil {
 			return err
 		}
-		ports, err = podForwardPorts(ports, *pod)
+		forwardPorts, err = podForwardPorts(ports, *pod)
 	}
 	if err != nil {
 		return err
@@ -80,27 +76,16 @@ func runPortForward(ctx context.Context, cfg *portForwardConfig) error {
 	options.Config = restConfig
 	options.RESTClient = restClient
 	options.Address = append([]string(nil), cfg.Address...)
-	options.Ports = ports
+	options.Ports = forwardPorts
 	options.StopChannel = make(chan struct{}, 1)
 	options.ReadyChannel = make(chan struct{})
-	if err := options.Validate(); err != nil {
-		return err
-	}
 	return options.RunPortForwardContext(ctx)
 }
 
-func splitForwardPort(port string) (string, string) {
-	local, remote, found := strings.Cut(port, ":")
-	if found {
-		return local, remote
-	}
-	return port, port
-}
-
-func serviceForwardPorts(ports []string, service v1.Service, pod v1.Pod) ([]string, error) {
+func serviceForwardPorts(ports []portForwardPort, service v1.Service, pod v1.Pod) ([]string, error) {
 	forwarded := make([]string, 0, len(ports))
 	for _, port := range ports {
-		localPort, remotePort := splitForwardPort(port)
+		localPort, remotePort := port.Local, port.Remote
 		portNumber, err := strconv.Atoi(remotePort)
 		if err != nil {
 			servicePort, err := util.LookupServicePortNumberByName(service, remotePort)
@@ -126,13 +111,10 @@ func serviceForwardPorts(ports []string, service v1.Service, pod v1.Pod) ([]stri
 	return forwarded, nil
 }
 
-func podForwardPorts(ports []string, pod v1.Pod) ([]string, error) {
+func podForwardPorts(ports []portForwardPort, pod v1.Pod) ([]string, error) {
 	forwarded := make([]string, 0, len(ports))
 	for _, port := range ports {
-		localPort, remotePort := splitForwardPort(port)
-		if remotePort == "" {
-			return nil, fmt.Errorf("remote port cannot be empty")
-		}
+		localPort, remotePort := port.Local, port.Remote
 		containerPort := remotePort
 		if _, err := strconv.Atoi(remotePort); err != nil {
 			portNumber, err := util.LookupContainerPortNumberByName(pod, remotePort)
@@ -150,7 +132,7 @@ func podForwardPorts(ports []string, pod v1.Pod) ([]string, error) {
 	return forwarded, nil
 }
 
-func rejectUDPServicePorts(ports []string, service *v1.Service) error {
+func rejectUDPServicePorts(ports []portForwardPort, service *v1.Service) error {
 	udp := sets.New[int]()
 	tcp := sets.New[int]()
 	for _, port := range service.Spec.Ports {
@@ -168,7 +150,7 @@ func rejectUDPServicePorts(ports []string, service *v1.Service) error {
 	})
 }
 
-func rejectUDPPodPorts(ports []string, pod *v1.Pod) error {
+func rejectUDPPodPorts(ports []portForwardPort, pod *v1.Pod) error {
 	udp := sets.New[int]()
 	tcp := sets.New[int]()
 	for _, container := range pod.Spec.Containers {
@@ -188,9 +170,9 @@ func rejectUDPPodPorts(ports []string, pod *v1.Pod) error {
 	})
 }
 
-func rejectUDPPorts(udp sets.Set[int], ports []string, namedPort func(string) (int, error)) error {
+func rejectUDPPorts(udp sets.Set[int], ports []portForwardPort, namedPort func(string) (int, error)) error {
 	for _, port := range ports {
-		_, remotePort := splitForwardPort(port)
+		remotePort := port.Remote
 		portNumber, err := strconv.Atoi(remotePort)
 		if err != nil {
 			portNumber, err = namedPort(remotePort)

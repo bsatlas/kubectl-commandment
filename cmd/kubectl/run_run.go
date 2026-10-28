@@ -20,19 +20,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
-	"strings"
 	"time"
 
-	"github.com/distribution/reference"
 	"k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/apimachinery/pkg/util/validation"
+	apiwatch "k8s.io/apimachinery/pkg/watch"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/cli-runtime/pkg/resource"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/cache"
+	watchtools "k8s.io/client-go/tools/watch"
 	"k8s.io/klog/v2"
 	"k8s.io/kubectl/pkg/cmd/attach"
 	"k8s.io/kubectl/pkg/cmd/delete"
@@ -41,9 +44,54 @@ import (
 	"k8s.io/kubectl/pkg/cmd/util"
 	"k8s.io/kubectl/pkg/polymorphichelpers"
 	"k8s.io/kubectl/pkg/scheme"
+	"k8s.io/kubectl/pkg/util/interrupt"
+	utilsexec "k8s.io/utils/exec"
 )
 
 var errRunPodCompleted = errors.New("pod ran to completion")
+
+func runPodCompleted(event apiwatch.Event) (bool, error) {
+	if event.Type == apiwatch.Deleted {
+		return false, runDeletedPodError()
+	}
+	pod, ok := event.Object.(*v1.Pod)
+	if !ok {
+		return false, nil
+	}
+	return pod.Status.Phase == v1.PodFailed || pod.Status.Phase == v1.PodSucceeded, nil
+}
+
+func runPodSucceeded(event apiwatch.Event) (bool, error) {
+	if event.Type == apiwatch.Deleted {
+		return false, runDeletedPodError()
+	}
+	pod, ok := event.Object.(*v1.Pod)
+	if !ok {
+		return false, nil
+	}
+	return pod.Status.Phase == v1.PodSucceeded, nil
+}
+
+func runPodRunningAndReady(event apiwatch.Event) (bool, error) {
+	if event.Type == apiwatch.Deleted {
+		return false, runDeletedPodError()
+	}
+	pod, ok := event.Object.(*v1.Pod)
+	if !ok {
+		return false, nil
+	}
+	switch pod.Status.Phase {
+	case v1.PodFailed, v1.PodSucceeded:
+		return false, errRunPodCompleted
+	case v1.PodRunning:
+		for _, condition := range pod.Status.Conditions {
+			if condition.Type == v1.PodReady && condition.Status == v1.ConditionTrue {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
 
 type runObject struct {
 	Object  runtime.Object
@@ -60,68 +108,18 @@ type runObjectCreator struct {
 }
 
 func runRun(ctx context.Context, cfg *runConfig) error {
-	attachRequested := cfg.Attach
-	if !explicitFlagValue(cfg.AttachState) && cfg.Stdin {
-		attachRequested = true
-	}
-	if cfg.Name == "" {
-		return errors.New("NAME is required for run")
-	}
-	if cfg.Image == "" {
-		return errors.New("--image is required")
-	}
-	if !reference.ReferenceRegexp.MatchString(cfg.Image) {
-		return fmt.Errorf("invalid image name %q: %w", cfg.Image, reference.ErrReferenceInvalidFormat)
-	}
-	if cfg.TTY && !cfg.Stdin {
-		return errors.New("-i/--stdin is required for containers with -t/--tty=true")
-	}
-	if cfg.Expose && cfg.Port == "" {
-		return errors.New("--port must be set when exposing a service")
-	}
-	if cfg.Port != "" {
-		if _, err := strconv.Atoi(cfg.Port); err != nil {
-			return errors.New("--port must be a number")
-		}
-	}
-	if !attachRequested && cfg.Rm {
-		return errors.New("--rm should only be used for attached containers")
-	}
-
-	strategy, err := dryRunStrategy(cfg.DryRun)
-	if err != nil {
-		return err
-	}
-	if attachRequested && strategy != util.DryRunNone {
-		return errors.New("--dry-run=[server|client] can't be used with attached containers options (--attach, --stdin, or --tty)")
-	}
-
-	explicitLabels, err := parseRunLabels(cfg.Labels)
-	if err != nil {
-		return err
-	}
+	explicitLabels := cfg.Labels
 	labels := explicitLabels
 	if len(labels) == 0 {
 		labels = map[string]string{
 			"run": cfg.Name,
 		}
 	}
-	annotations, _, err := util.ParsePairs(cfg.Annotations, "annotations", false)
-	if err != nil {
-		return err
+	annotations := make(map[string]string, len(cfg.Annotations))
+	for _, annotation := range cfg.Annotations {
+		annotations[annotation.Name] = annotation.Value
 	}
-	environment, err := parseRunEnvironment(cfg.Env)
-	if err != nil {
-		return err
-	}
-	restartPolicy, err := runRestartPolicy(cfg.Restart, cfg.Stdin)
-	if err != nil {
-		return err
-	}
-	pullPolicy, err := runImagePullPolicy(cfg.ImagePullPolicy)
-	if err != nil {
-		return err
-	}
+	environment := append([]v1.EnvVar(nil), cfg.Env...)
 
 	factory := cfg.Client.factory()
 	namespace, enforceNamespace, err := factory.ToRawKubeConfigLoader().Namespace()
@@ -131,7 +129,7 @@ func runRun(ctx context.Context, cfg *runConfig) error {
 
 	printFlags := genericclioptions.NewPrintFlags("created").WithTypeSetter(scheme.Scheme)
 	configurePrintFlags(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
-	printObject, err := printObject(printFlags, strategy, cfg.Streams.Out)
+	printObject, err := printObject(printFlags, cfg.DryRunStrategy, cfg.Streams.Out)
 	if err != nil {
 		return err
 	}
@@ -153,6 +151,14 @@ func runRun(ctx context.Context, cfg *runConfig) error {
 		return err
 	}
 	deleteFlags := delete.NewDeleteFlags("to use to replace the resource.")
+	*deleteFlags.CascadingStrategy = cfg.Cascade
+	*deleteFlags.Force = cfg.Force
+	*deleteFlags.GracePeriod = cfg.GracePeriod
+	*deleteFlags.Timeout = cfg.Timeout
+	*deleteFlags.Wait = cfg.Wait
+	*deleteFlags.FileNameFlags.Filenames = append([]string(nil), cfg.Filename...)
+	*deleteFlags.FileNameFlags.Kustomize = cfg.Kustomize
+	*deleteFlags.FileNameFlags.Recursive = cfg.Recursive
 	deleteOptions, err := deleteFlags.ToOptions(dynamicClient, cfg.Streams)
 	if err != nil {
 		return err
@@ -166,11 +172,11 @@ func runRun(ctx context.Context, cfg *runConfig) error {
 		factory:          factory,
 		config:           cfg,
 		recorder:         recorder,
-		strategy:         strategy,
+		strategy:         cfg.DryRunStrategy,
 		namespace:        namespace,
 		enforceNamespace: enforceNamespace,
 	}
-	pod := createRunPod(cfg, labels, annotations, environment, restartPolicy, pullPolicy)
+	pod := createRunPod(cfg, labels, annotations, environment)
 	createdPod, err := creator.create(pod, &v1.Pod{})
 	if err != nil {
 		return err
@@ -188,13 +194,13 @@ func runRun(ctx context.Context, cfg *runConfig) error {
 		}
 	}
 
-	if attachRequested {
+	if cfg.Attach {
 		if cfg.Rm {
 			defer func() {
 				_ = removeRunObjects(factory, deleteOptions, created)
 			}()
 		}
-		return runAttached(ctx, cfg, factory, createdPod, restartPolicy)
+		return runAttached(ctx, cfg, factory, createdPod, cfg.RestartPolicy)
 	}
 
 	for _, object := range created {
@@ -257,7 +263,7 @@ func (creator runObjectCreator) create(object, overrideData runtime.Object) (*ru
 	return &result, nil
 }
 
-func createRunPod(cfg *runConfig, labels, annotations map[string]string, environment []v1.EnvVar, restartPolicy v1.RestartPolicy, pullPolicy v1.PullPolicy) *v1.Pod {
+func createRunPod(cfg *runConfig, labels, annotations map[string]string, environment []v1.EnvVar) *v1.Pod {
 	var securityContext *v1.SecurityContext
 	if cfg.Privileged {
 		securityContext = &v1.SecurityContext{
@@ -271,7 +277,7 @@ func createRunPod(cfg *runConfig, labels, annotations map[string]string, environ
 		Stdin:           cfg.Stdin,
 		StdinOnce:       !cfg.LeaveStdinOpen && cfg.Stdin,
 		TTY:             cfg.TTY,
-		ImagePullPolicy: pullPolicy,
+		ImagePullPolicy: cfg.ImagePullPolicy,
 		SecurityContext: securityContext,
 	}
 	if len(cfg.Arguments) > 0 {
@@ -281,27 +287,27 @@ func createRunPod(cfg *runConfig, labels, annotations map[string]string, environ
 			container.Args = append([]string(nil), cfg.Arguments...)
 		}
 	}
-	if cfg.Port != "" {
-		port, _ := strconv.Atoi(cfg.Port)
+	if cfg.Port != nil {
 		container.Ports = []v1.ContainerPort{{
-			ContainerPort: int32(port),
+			ContainerPort: int32(*cfg.Port),
 		}}
 	}
 	pod := v1.Pod{
-		ObjectMeta: runObjectMeta(cfg.Name, labels, annotations),
 		Spec: v1.PodSpec{
 			Containers:    []v1.Container{container},
 			DNSPolicy:     v1.DNSClusterFirst,
-			RestartPolicy: restartPolicy,
+			RestartPolicy: cfg.RestartPolicy,
 		},
 	}
+	pod.Name = cfg.Name
+	pod.Labels = labels
+	pod.Annotations = annotations
 	return &pod
 }
 
 func createRunService(cfg *runConfig, selector, labels map[string]string) *v1.Service {
-	port, _ := strconv.Atoi(cfg.Port)
+	port := *cfg.Port
 	service := v1.Service{
-		ObjectMeta: runObjectMeta(cfg.Name, labels, nil),
 		Spec: v1.ServiceSpec{
 			Selector: selector,
 			Ports: []v1.ServicePort{{
@@ -311,66 +317,9 @@ func createRunService(cfg *runConfig, selector, labels map[string]string) *v1.Se
 			}},
 		},
 	}
+	service.Name = cfg.Name
+	service.Labels = labels
 	return &service
-}
-
-func parseRunLabels(value string) (map[string]string, error) {
-	if value == "" {
-		return nil, nil
-	}
-	labels := make(map[string]string)
-	for _, item := range strings.Split(value, ",") {
-		key, labelValue, found := strings.Cut(item, "=")
-		if !found {
-			return nil, fmt.Errorf("unexpected label spec: %s", item)
-		}
-		if key == "" {
-			return nil, errors.New("unexpected empty label key")
-		}
-		labels[key] = labelValue
-	}
-	return labels, nil
-}
-
-func parseRunEnvironment(values []string) ([]v1.EnvVar, error) {
-	environment := make([]v1.EnvVar, 0, len(values))
-	for _, item := range values {
-		name, value, found := strings.Cut(item, "=")
-		if !found || name == "" || len(validation.IsEnvVarName(name)) != 0 {
-			return nil, fmt.Errorf("invalid env: %v", item)
-		}
-		environment = append(environment, v1.EnvVar{
-			Name:  name,
-			Value: value,
-		})
-	}
-	return environment, nil
-}
-
-func runRestartPolicy(value string, interactive bool) (v1.RestartPolicy, error) {
-	if value == "" {
-		if interactive {
-			return v1.RestartPolicyOnFailure, nil
-		}
-		return v1.RestartPolicyAlways, nil
-	}
-	policy := v1.RestartPolicy(value)
-	switch policy {
-	case v1.RestartPolicyAlways, v1.RestartPolicyNever, v1.RestartPolicyOnFailure:
-		return policy, nil
-	default:
-		return "", fmt.Errorf("invalid restart policy: %s, valid values are: %s, %s, %s", value, v1.RestartPolicyAlways, v1.RestartPolicyOnFailure, v1.RestartPolicyNever)
-	}
-}
-
-func runImagePullPolicy(value string) (v1.PullPolicy, error) {
-	policy := v1.PullPolicy(value)
-	switch policy {
-	case v1.PullAlways, v1.PullIfNotPresent, v1.PullNever, "":
-		return policy, nil
-	default:
-		return "", fmt.Errorf("invalid image pull policy: %s, valid values are: %s, %s, %s", value, v1.PullAlways, v1.PullIfNotPresent, v1.PullNever)
-	}
 }
 
 func runAttached(ctx context.Context, cfg *runConfig, factory util.Factory, created *runObject, restartPolicy v1.RestartPolicy) error {
@@ -427,7 +376,11 @@ func runAttached(ctx context.Context, cfg *runConfig, factory util.Factory, crea
 			return fmt.Errorf("pod %s/%s failed with unknown exit code", finished.Namespace, finished.Name)
 		}
 		message := fmt.Errorf("pod %s/%s terminated (%s)\n%s", finished.Namespace, finished.Name, terminated.Reason, terminated.Message)
-		return runCodeExitError(message, int(terminated.ExitCode))
+		failure := utilsexec.CodeExitError{
+			Err:  message,
+			Code: int(terminated.ExitCode),
+		}
+		return failure
 	default:
 		return fmt.Errorf("pod %s/%s left in phase %s", finished.Namespace, finished.Name, finished.Status.Phase)
 	}
@@ -478,7 +431,8 @@ func handleRunAttach(ctx context.Context, factory util.Factory, clientset kubern
 			Container: containerName,
 		}
 		if logErr := runLogOptions(logContext, factory, pod, options, initial); logErr == nil {
-			initial.SinceTime = runTimestampNow()
+			now := metaNow()
+			initial.SinceTime = &now
 			logsSince = initial
 		}
 		cancel()
@@ -517,4 +471,39 @@ func runLogOptions(ctx context.Context, factory util.Factory, pod *v1.Pod, optio
 		}
 	}
 	return nil
+}
+
+func runDeletedPodError() error {
+	resource := schema.GroupResource{
+		Resource: "pods",
+	}
+	return apierrors.NewNotFound(resource, "")
+}
+
+func waitForRunPod(ctx context.Context, clientset kubernetes.Interface, namespace, name string, timeout time.Duration, condition watchtools.ConditionFunc) (*v1.Pod, error) {
+	ctx, cancel := watchtools.ContextWithOptionalTimeout(ctx, timeout)
+	defer cancel()
+
+	selector := fields.OneTermEqualSelector("metadata.name", name).String()
+	listWatch := cache.ListWatch{
+		ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
+			options.FieldSelector = selector
+			return clientset.CoreV1().Pods(namespace).List(ctx, options)
+		},
+		WatchFunc: func(options metav1.ListOptions) (apiwatch.Interface, error) {
+			options.FieldSelector = selector
+			return clientset.CoreV1().Pods(namespace).Watch(ctx, options)
+		},
+	}
+
+	intr := interrupt.New(nil, cancel)
+	var result *v1.Pod
+	err := intr.Run(func() error {
+		event, err := watchtools.UntilWithSync(ctx, &listWatch, &v1.Pod{}, nil, condition)
+		if event != nil {
+			result, _ = event.Object.(*v1.Pod)
+		}
+		return err
+	})
+	return result, err
 }

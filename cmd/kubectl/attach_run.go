@@ -12,10 +12,6 @@ import (
 )
 
 func runAttach(_ context.Context, cfg *attachConfig) error {
-	if cfg.PodRunningTimeout <= 0 {
-		return fmt.Errorf("--pod-running-timeout must be higher than zero")
-	}
-
 	factory := cfg.Client.factory()
 	namespace, _, err := factory.ToRawKubeConfigLoader().Namespace()
 	if err != nil {
@@ -25,13 +21,10 @@ func runAttach(_ context.Context, cfg *attachConfig) error {
 	builder := factory.NewBuilder().
 		WithScheme(scheme.Scheme, scheme.Scheme.PrioritizedVersionsAllGroups()...).
 		NamespaceParam(namespace).DefaultNamespace()
-	switch len(cfg.Arguments) {
-	case 1:
+	if len(cfg.Arguments) == 1 {
 		builder = builder.ResourceNames("pods", cfg.Arguments[0])
-	case 2:
+	} else {
 		builder = builder.ResourceNames(cfg.Arguments[0], cfg.Arguments[1])
-	default:
-		return fmt.Errorf("expected POD, TYPE/NAME, or TYPE NAME")
 	}
 	object, err := builder.Do().Object()
 	if err != nil {
@@ -67,9 +60,6 @@ func runAttach(_ context.Context, cfg *attachConfig) error {
 		Attach:        &attach.DefaultRemoteAttach{},
 		GetPodTimeout: cfg.PodRunningTimeout,
 		Config:        restConfig,
-	}
-	if err := options.Validate(); err != nil {
-		return err
 	}
 	return options.Run()
 }

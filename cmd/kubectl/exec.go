@@ -58,16 +58,15 @@ func execCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[e
 			cb.Access.Stdin(&cb.Config.Streams.In)
 			cb.Access.Stdout(&cb.Config.Streams.Out)
 			cb.Access.Stderr(&cb.Config.Streams.ErrOut)
-
 			cb.Dialect.EndOfOptions()
-
 			command := cb.Values.Sequence(&cb.Config.Command, cli.Value.String())
+			var resource cli.Destination[execConfig, string]
 			cb.Arguments.Form(func(form *cli.ArgumentFormBuilder[execConfig]) {
-				form.String(&form.Config.Resource, "resource").
-					CompleteBy(podResourceArgumentCompleter(
-						func(cfg *execConfig) (clientConfig, []string) { return cfg.Client, nil },
-					)).
-					From(client)
+				resourceArgument := form.String(&form.Config.Resource, "resource")
+				resource = resourceArgument.Destination()
+				resourceArgument.CompleteBy(podResourceArgumentCompleter(
+					func(cfg *execConfig) (clientConfig, []string) { return cfg.Client, nil },
+				)).From(client)
 				form.Literal("--").EndOfOptions()
 				form.PassThrough(command, "command", cli.Count.OneOrMore())
 			})
@@ -75,40 +74,36 @@ func execCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[e
 				form.Literal("--").EndOfOptions()
 				form.PassThrough(command, "command", cli.Count.OneOrMore())
 			})
-
 			containerFlag := cb.Flags.String(&cb.Config.Container)
-			containerFlag = containerFlag.Description("Container name. If omitted, use the kubectl.kubernetes.io/default-container annotation for selecting the container to be attached or the first container in the pod will be chosen")
+			containerFlag.Description("Container name. If omitted, use the kubectl.kubernetes.io/default-container annotation for selecting the container to be attached or the first container in the pod will be chosen")
 			containerFlag.CompleteBy(containerCompleter(
 				func(cfg *execConfig) clientConfig { return cfg.Client },
 				func(cfg *execConfig) string { return cfg.Resource },
 			)).From(client)
 			containerFlag.Long("container")
 			containerFlag.Short('c')
-
 			filenameValue := cb.Values.Sequence(&cb.Config.Filename, cli.Value.String())
 			filenameFlag := cb.Flags.Sequence(filenameValue)
-			filenameFlag = filenameFlag.DelimitedBy(",")
-			filenameFlag = filenameFlag.Description("to use to exec into the resource")
+			filenameFlag.DelimitedBy(",")
+			filenameFlag.Description("to use to exec into the resource")
 			filenameFlag.Long("filename")
 			filenameFlag.Short('f')
-
 			podRunningTimeoutFlag := cb.Flags.Value(&cb.Config.PodRunningTimeout, durationLanguage())
-			podRunningTimeoutFlag = podRunningTimeoutFlag.Description("The length of time (like 5s, 2m, or 3h, higher than zero) to wait until at least one pod is running")
+			podRunningTimeoutFlag.Description("The length of time (like 5s, 2m, or 3h, higher than zero) to wait until at least one pod is running")
 			cb.Values.Default(podRunningTimeoutFlag, time.Minute)
 			podRunningTimeoutFlag.Long("pod-running-timeout")
-
+			cb.Rule.AtLeastOne(resource, filenameValue)
+			cb.Rule.GreaterThan(podRunningTimeoutFlag.Destination(), time.Duration(0))
 			quietFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Quiet))
-			quietFlag = quietFlag.Description("Only print output from the remote session")
+			quietFlag.Description("Only print output from the remote session")
 			quietFlag.Long("quiet").ImplicitValue(true)
 			quietFlag.Short('q').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
-
 			stdinFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Stdin))
-			stdinFlag = stdinFlag.Description("Pass stdin to the container")
+			stdinFlag.Description("Pass stdin to the container")
 			stdinFlag.Long("stdin").ImplicitValue(true)
 			stdinFlag.Short('i').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
-
 			ttyFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.TTY))
-			ttyFlag = ttyFlag.Description("Stdin is a TTY")
+			ttyFlag.Description("Stdin is a TTY")
 			ttyFlag.Long("tty").ImplicitValue(true)
 			ttyFlag.Short('t').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
 		},

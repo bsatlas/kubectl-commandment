@@ -23,6 +23,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -32,7 +34,110 @@ import (
 	"k8s.io/kubectl/pkg/cmd/exec"
 )
 
-var errCopyFileSpec = errors.New("filespec must match the canonical format: [[namespace/]pod:]file/path")
+type copyPathSpec interface {
+	String() string
+}
+
+type copyLocalPath struct {
+	file string
+}
+
+func newCopyLocalPath(fileName string) copyLocalPath {
+	file := stripCopyTrailingSlash(fileName)
+	path := copyLocalPath{
+		file: file,
+	}
+	return path
+}
+
+func (p copyLocalPath) String() string { return p.file }
+
+func (p copyLocalPath) Dir() copyLocalPath { return newCopyLocalPath(filepath.Dir(p.file)) }
+
+func (p copyLocalPath) Base() copyLocalPath { return newCopyLocalPath(filepath.Base(p.file)) }
+
+func (p copyLocalPath) Clean() copyLocalPath { return newCopyLocalPath(filepath.Clean(p.file)) }
+
+func (p copyLocalPath) Join(elem copyPathSpec) copyLocalPath {
+	return newCopyLocalPath(filepath.Join(p.file, elem.String()))
+}
+
+func (p copyLocalPath) Glob() ([]string, error) { return filepath.Glob(p.file) }
+
+func copyPathIsRelative(base, target copyLocalPath) bool {
+	baseNormalized := strings.ReplaceAll(stripCopyTrailingSlash(base.String()), `\`, "/")
+	targetNormalized := strings.ReplaceAll(stripCopyTrailingSlash(target.String()), `\`, "/")
+	relative, err := filepath.Rel(baseNormalized, targetNormalized)
+	if err != nil {
+		return false
+	}
+	return relative == "." || relative == stripCopyPathShortcuts(relative)
+}
+
+type copyRemotePath struct {
+	file string
+}
+
+func newCopyRemotePath(fileName string) copyRemotePath {
+	file := strings.ReplaceAll(stripCopyTrailingSlash(fileName), `\`, "/")
+	path := copyRemotePath{
+		file: file,
+	}
+	return path
+}
+
+func (p copyRemotePath) String() string { return p.file }
+
+func (p copyRemotePath) Dir() copyRemotePath { return newCopyRemotePath(path.Dir(p.file)) }
+
+func (p copyRemotePath) Base() copyRemotePath { return newCopyRemotePath(path.Base(p.file)) }
+
+func (p copyRemotePath) Clean() copyRemotePath { return newCopyRemotePath(path.Clean(p.file)) }
+
+func (p copyRemotePath) Join(elem copyPathSpec) copyRemotePath {
+	return newCopyRemotePath(path.Join(p.file, elem.String()))
+}
+
+func (p copyRemotePath) StripSlashes() copyRemotePath {
+	return newCopyRemotePath(stripCopyLeadingSlash(p.file))
+}
+
+func stripCopyTrailingSlash(file string) string {
+	if file == "" || file == "/" {
+		return file
+	}
+	if strings.HasSuffix(file, "/") {
+		return file[:len(file)-1]
+	}
+	return file
+}
+
+func stripCopyLeadingSlash(file string) string { return strings.TrimLeft(file, `/\`) }
+
+func stripCopyPathShortcuts(value string) string {
+	result := value
+	for {
+		trimmed := strings.TrimPrefix(result, "../")
+		if trimmed == result {
+			break
+		}
+		result = trimmed
+	}
+	for {
+		trimmed := strings.TrimPrefix(result, `..\`)
+		if trimmed == result {
+			break
+		}
+		result = trimmed
+	}
+	if result == "." || result == ".." {
+		result = ""
+	}
+	if result != "" && (result[0] == '/' || result[0] == '\\') {
+		return result[1:]
+	}
+	return result
+}
 
 type copyRuntime struct {
 	ctx        context.Context
@@ -48,20 +153,8 @@ type copyRuntime struct {
 }
 
 func runCopy(ctx context.Context, cfg *cpConfig) error {
-	source, err := parseCopyFileSpec(cfg.Source)
-	if err != nil {
-		return err
-	}
-	destination, err := parseCopyFileSpec(cfg.Destination)
-	if err != nil {
-		return err
-	}
-	if source.PodName != "" && destination.PodName != "" {
-		return fmt.Errorf("one of src or dest must be a local file specification")
-	}
-	if source.File.String() == "" || destination.File.String() == "" {
-		return errors.New("filepath can not be empty")
-	}
+	source := cfg.Source
+	destination := cfg.Destination
 
 	factory := cfg.Client.factory()
 	namespace, _, err := factory.ToRawKubeConfigLoader().Namespace()
@@ -91,43 +184,7 @@ func runCopy(ctx context.Context, cfg *cpConfig) error {
 	if source.PodName != "" {
 		return operation.copyFromPod(source, destination)
 	}
-	if destination.PodName != "" {
-		return operation.copyToPod(source, destination, &exec.ExecOptions{})
-	}
-	return fmt.Errorf("one of src or dest must be a remote file specification")
-}
-
-func parseCopyFileSpec(value string) (copyFileSpec, error) {
-	index := strings.Index(value, ":")
-	if index == 0 {
-		return copyFileSpec{}, errCopyFileSpec
-	}
-	if index == -1 {
-		result := copyFileSpec{
-			File: newCopyLocalPath(value),
-		}
-		return result, nil
-	}
-
-	pod, file := value[:index], value[index+1:]
-	pieces := strings.Split(pod, "/")
-	switch len(pieces) {
-	case 1:
-		result := copyFileSpec{
-			PodName: pieces[0],
-			File:    newCopyRemotePath(file),
-		}
-		return result, nil
-	case 2:
-		result := copyFileSpec{
-			PodNamespace: pieces[0],
-			PodName:      pieces[1],
-			File:         newCopyRemotePath(file),
-		}
-		return result, nil
-	default:
-		return copyFileSpec{}, errCopyFileSpec
-	}
+	return operation.copyToPod(source, destination, &exec.ExecOptions{})
 }
 
 func (o *copyRuntime) checkDestinationIsDir(destination copyFileSpec) error {
@@ -140,7 +197,7 @@ func (o *copyRuntime) checkDestinationIsDir(destination copyFileSpec) error {
 			Namespace: destination.PodNamespace,
 			PodName:   destination.PodName,
 		},
-		Command:  []string{"test", "-d", destination.File.String()},
+		Command:  []string{"test", "-d", destination.File},
 		Executor: o.executor,
 	}
 
@@ -157,13 +214,13 @@ func (o *copyRuntime) checkDestinationIsDir(destination copyFileSpec) error {
 }
 
 func (o *copyRuntime) copyToPod(source, destination copyFileSpec, options *exec.ExecOptions) error {
-	if _, err := os.Stat(source.File.String()); err != nil {
-		return fmt.Errorf("%s doesn't exist in local filesystem", source.File.String())
+	if _, err := os.Stat(source.File); err != nil {
+		return fmt.Errorf("%s doesn't exist in local filesystem", source.File)
 	}
 	reader, writer := io.Pipe()
 
-	sourceFile := source.File.(copyLocalPath)
-	destinationFile := destination.File.(copyRemotePath)
+	sourceFile := newCopyLocalPath(source.File)
+	destinationFile := newCopyRemotePath(destination.File)
 	if err := o.checkDestinationIsDir(destination); err == nil {
 		destinationFile = destinationFile.Join(sourceFile.Base())
 	} else if errors.Is(err, context.DeadlineExceeded) {
@@ -200,8 +257,8 @@ func (o *copyRuntime) copyToPod(source, destination copyFileSpec, options *exec.
 
 func (o *copyRuntime) copyFromPod(source, destination copyFileSpec) error {
 	reader := newCopyTarPipe(source, o)
-	sourceFile := source.File.(copyRemotePath)
-	destinationFile := destination.File.(copyLocalPath)
+	sourceFile := newCopyRemotePath(source.File)
+	destinationFile := newCopyLocalPath(destination.File)
 	prefix := stripCopyPathShortcuts(sourceFile.StripSlashes().Clean().String())
 	return o.untarAll(source.PodNamespace, source.PodName, prefix, sourceFile, destinationFile, reader)
 }
@@ -235,11 +292,11 @@ func (pipe *copyTarPipe) initReadFrom(offset uint64) {
 			Namespace: pipe.source.PodNamespace,
 			PodName:   pipe.source.PodName,
 		},
-		Command:  []string{"tar", "cf", "-", pipe.source.File.String()},
+		Command:  []string{"tar", "cf", "-", pipe.source.File},
 		Executor: pipe.operation.executor,
 	}
 	if pipe.operation.maxTries != 0 {
-		escapedPath := strings.ReplaceAll(pipe.source.File.String(), "'", `'\''`)
+		escapedPath := strings.ReplaceAll(pipe.source.File, "'", `'\''`)
 		options.Command = []string{"sh", "-c", fmt.Sprintf("tar cf - '%s' | tail -c+%d", escapedPath, offset)}
 	}
 	go func() {

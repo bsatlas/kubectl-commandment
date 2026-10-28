@@ -1,26 +1,91 @@
 package main
 
 import (
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/abstractionsinc/commandment/cli"
 	"k8s.io/cli-runtime/pkg/genericiooptions"
+	"k8s.io/kubectl/pkg/proxy"
 )
+
+type proxyRegexpSet struct {
+	Source      string
+	Expressions []*regexp.Regexp
+}
+
+func proxyRegexpSetLanguage() cli.ValueCodec[proxyRegexpSet] {
+	language := cli.ValueCodec[proxyRegexpSet]{
+		Name: "regular-expression-list",
+		Parse: func(value string) (proxyRegexpSet, error) {
+			expressions, err := proxy.MakeRegexpArray(value)
+			if err != nil {
+				return proxyRegexpSet{}, cli.Rejection.Message(
+					"regular-expression-list",
+					err.Error(),
+					cli.Rejection.At(0, 0, len(value)),
+				)
+			}
+			set := proxyRegexpSet{
+				Source:      value,
+				Expressions: expressions,
+			}
+			return set, nil
+		},
+		Format: func(value proxyRegexpSet) string { return value.Source },
+		Snapshot: func(value proxyRegexpSet) proxyRegexpSet {
+			snapshot := proxyRegexpSet{
+				Source:      value.Source,
+				Expressions: append([]*regexp.Regexp(nil), value.Expressions...),
+			}
+			return snapshot
+		},
+	}
+	return language
+}
+
+func proxyPathPrefixLanguage() cli.ValueCodec[string] {
+	language := cli.ValueCodec[string]{
+		Name: "proxy-path-prefix",
+		Parse: func(value string) (string, error) {
+			if !strings.HasSuffix(value, "/") {
+				value += "/"
+			}
+			return value, nil
+		},
+		Format:   func(value string) string { return value },
+		Snapshot: func(value string) string { return value },
+	}
+	return language
+}
+
+func mustProxyRegexpSet(value string) proxyRegexpSet {
+	expressions, err := proxy.MakeRegexpArray(value)
+	if err != nil {
+		panic(err)
+	}
+	set := proxyRegexpSet{
+		Source:      value,
+		Expressions: expressions,
+	}
+	return set
+}
 
 type proxyConfig struct {
 	Client           clientConfig
 	Streams          genericiooptions.IOStreams
 	Arguments        []string
-	AcceptHosts      string
-	AcceptPaths      string
+	AcceptHosts      proxyRegexpSet
+	AcceptPaths      proxyRegexpSet
 	Address          string
 	APIPrefix        string
 	AppendServerPath bool
 	DisableFilter    bool
 	Keepalive        time.Duration
 	Port             int
-	RejectMethods    string
-	RejectPaths      string
+	RejectMethods    proxyRegexpSet
+	RejectPaths      proxyRegexpSet
 	UnixSocket       string
 	Www              string
 	WwwPrefix        string
@@ -67,67 +132,55 @@ func proxyCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[
 			cb.Arguments.Form(func(form *cli.ArgumentFormBuilder[proxyConfig]) {
 				form.Sequence(arguments, "ARG", cli.Count.ZeroOrMore())
 			})
-
-			acceptHostsFlag := cb.Flags.String(&cb.Config.AcceptHosts)
-			acceptHostsFlag = acceptHostsFlag.Description("Regular expression for hosts that the proxy should accept.")
-			cb.Values.Default(acceptHostsFlag, "^localhost$,^127\\.0\\.0\\.1$,^\\[::1\\]$")
+			acceptHostsFlag := cb.Flags.Value(&cb.Config.AcceptHosts, proxyRegexpSetLanguage())
+			acceptHostsFlag.Description("Regular expression for hosts that the proxy should accept.")
+			cb.Values.Default(acceptHostsFlag, mustProxyRegexpSet("^localhost$,^127\\.0\\.0\\.1$,^\\[::1\\]$"))
 			acceptHostsFlag.Long("accept-hosts")
-
-			acceptPathsFlag := cb.Flags.String(&cb.Config.AcceptPaths)
-			acceptPathsFlag = acceptPathsFlag.Description("Regular expression for paths that the proxy should accept.")
-			cb.Values.Default(acceptPathsFlag, "^.*")
+			acceptPathsFlag := cb.Flags.Value(&cb.Config.AcceptPaths, proxyRegexpSetLanguage())
+			acceptPathsFlag.Description("Regular expression for paths that the proxy should accept.")
+			cb.Values.Default(acceptPathsFlag, mustProxyRegexpSet("^.*"))
 			acceptPathsFlag.Long("accept-paths")
-
 			addressFlag := cb.Flags.String(&cb.Config.Address)
-			addressFlag = addressFlag.Description("The IP address on which to serve on.")
+			addressFlag.Description("The IP address on which to serve on.")
 			cb.Values.Default(addressFlag, "127.0.0.1")
 			addressFlag.Long("address")
-
-			apiPrefixFlag := cb.Flags.String(&cb.Config.APIPrefix)
-			apiPrefixFlag = apiPrefixFlag.Description("Prefix to serve the proxied API under.")
+			apiPrefixFlag := cb.Flags.Value(&cb.Config.APIPrefix, proxyPathPrefixLanguage())
+			apiPrefixFlag.Description("Prefix to serve the proxied API under.")
 			cb.Values.Default(apiPrefixFlag, "/")
 			apiPrefixFlag.Long("api-prefix")
-
 			appendServerPathFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.AppendServerPath))
-			appendServerPathFlag = appendServerPathFlag.Description("If true, enables automatic path appending of the kube context server path to each request.")
+			appendServerPathFlag.Description("If true, enables automatic path appending of the kube context server path to each request.")
 			appendServerPathFlag.Long("append-server-path").ImplicitValue(true)
-
 			disableFilterFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.DisableFilter))
-			disableFilterFlag = disableFilterFlag.Description("If true, disable request filtering in the proxy. This is dangerous, and can leave you vulnerable to XSRF attacks, when used with an accessible port.")
+			disableFilterFlag.Description("If true, disable request filtering in the proxy. This is dangerous, and can leave you vulnerable to XSRF attacks, when used with an accessible port.")
 			disableFilterFlag.Long("disable-filter").ImplicitValue(true)
-
 			keepaliveFlag := cb.Flags.Value(&cb.Config.Keepalive, durationLanguage())
-			keepaliveFlag = keepaliveFlag.Description("keepalive specifies the keep-alive period for an active network connection. Set to 0 to disable keepalive.")
+			keepaliveFlag.Description("keepalive specifies the keep-alive period for an active network connection. Set to 0 to disable keepalive.")
 			keepaliveFlag.Long("keepalive")
-
 			portFlag := cb.Flags.Int(&cb.Config.Port)
-			portFlag = portFlag.Description("The port on which to run the proxy. Set to 0 to pick a random port.")
+			portFlag.Description("The port on which to run the proxy. Set to 0 to pick a random port.")
 			cb.Values.Default(portFlag, 8001)
 			portFlag.Long("port")
 			portFlag.Short('p')
-
-			rejectMethodsFlag := cb.Flags.String(&cb.Config.RejectMethods)
-			rejectMethodsFlag = rejectMethodsFlag.Description("Regular expression for HTTP methods that the proxy should reject (example --reject-methods='POST,PUT,PATCH'). ")
-			cb.Values.Default(rejectMethodsFlag, "^$")
+			rejectMethodsFlag := cb.Flags.Value(&cb.Config.RejectMethods, proxyRegexpSetLanguage())
+			rejectMethodsFlag.Description("Regular expression for HTTP methods that the proxy should reject (example --reject-methods='POST,PUT,PATCH'). ")
+			cb.Values.Default(rejectMethodsFlag, mustProxyRegexpSet("^$"))
 			rejectMethodsFlag.Long("reject-methods")
-
-			rejectPathsFlag := cb.Flags.String(&cb.Config.RejectPaths)
-			rejectPathsFlag = rejectPathsFlag.Description("Regular expression for paths that the proxy should reject. Paths specified here will be rejected even accepted by --accept-paths.")
-			cb.Values.Default(rejectPathsFlag, "^/api/.*/pods/.*/exec,^/api/.*/pods/.*/attach,^/api/.*/nodes/.*/proxy/run")
+			rejectPathsFlag := cb.Flags.Value(&cb.Config.RejectPaths, proxyRegexpSetLanguage())
+			rejectPathsFlag.Description("Regular expression for paths that the proxy should reject. Paths specified here will be rejected even accepted by --accept-paths.")
+			cb.Values.Default(rejectPathsFlag, mustProxyRegexpSet("^/api/.*/pods/.*/exec,^/api/.*/pods/.*/attach,^/api/.*/nodes/.*/proxy/run"))
 			rejectPathsFlag.Long("reject-paths")
-
 			unixSocketFlag := cb.Flags.String(&cb.Config.UnixSocket)
-			unixSocketFlag = unixSocketFlag.Description("Unix socket on which to run the proxy.")
+			unixSocketFlag.Description("Unix socket on which to run the proxy.")
 			unixSocketFlag.Long("unix-socket")
 			unixSocketFlag.Short('u')
-
+			cb.Rule.When(cb.When.NotEqual(unixSocketFlag.Destination(), "")).Equal(portFlag.Destination(), 8001)
 			wwwFlag := cb.Flags.String(&cb.Config.Www)
-			wwwFlag = wwwFlag.Description("Also serve static files from the given directory under the specified prefix.")
+			wwwFlag.Description("Also serve static files from the given directory under the specified prefix.")
 			wwwFlag.Long("www")
 			wwwFlag.Short('w')
-
-			wwwPrefixFlag := cb.Flags.String(&cb.Config.WwwPrefix)
-			wwwPrefixFlag = wwwPrefixFlag.Description("Prefix to serve static files under, if static file directory is specified.")
+			wwwPrefixFlag := cb.Flags.Value(&cb.Config.WwwPrefix, proxyPathPrefixLanguage())
+			wwwPrefixFlag.Description("Prefix to serve static files under, if static file directory is specified.")
 			cb.Values.Default(wwwPrefixFlag, "/static/")
 			wwwPrefixFlag.Long("www-prefix")
 			wwwPrefixFlag.Short('P')

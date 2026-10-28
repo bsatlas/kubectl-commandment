@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"strings"
 
 	"k8s.io/klog/v2"
 	"k8s.io/kubectl/pkg/proxy"
@@ -16,15 +15,6 @@ func runProxy(_ context.Context, cfg *proxyConfig) error {
 	clientConfig, err := cfg.Client.factory().ToRESTConfig()
 	if err != nil {
 		return err
-	}
-
-	staticPrefix := cfg.WwwPrefix
-	if !strings.HasSuffix(staticPrefix, "/") {
-		staticPrefix += "/"
-	}
-	apiPrefix := cfg.APIPrefix
-	if !strings.HasSuffix(apiPrefix, "/") {
-		apiPrefix += "/"
 	}
 
 	if !cfg.AppendServerPath {
@@ -43,20 +33,17 @@ func runProxy(_ context.Context, cfg *proxyConfig) error {
 			klog.Warning("Request filter disabled, your proxy is vulnerable to XSRF attacks, please be cautious")
 		}
 	} else {
-		if cfg.RejectPaths == "" || cfg.RejectMethods == "" {
+		if cfg.RejectPaths.Source == "" || cfg.RejectMethods.Source == "" {
 			klog.Warning("Request filter has been relaxed, your proxy may be vulnerable to attacks, please be cautious")
 		}
 		filter = &proxy.FilterServer{
-			AcceptPaths:   proxy.MakeRegexpArrayOrDie(cfg.AcceptPaths),
-			RejectPaths:   proxy.MakeRegexpArrayOrDie(cfg.RejectPaths),
-			AcceptHosts:   proxy.MakeRegexpArrayOrDie(cfg.AcceptHosts),
-			RejectMethods: proxy.MakeRegexpArrayOrDie(cfg.RejectMethods),
+			AcceptPaths:   cfg.AcceptPaths.Expressions,
+			RejectPaths:   cfg.RejectPaths.Expressions,
+			AcceptHosts:   cfg.AcceptHosts.Expressions,
+			RejectMethods: cfg.RejectMethods.Expressions,
 		}
 	}
 
-	if cfg.Port != 8001 && cfg.UnixSocket != "" {
-		return fmt.Errorf("cannot set --unix-socket and --port at the same time")
-	}
 	if cfg.Www != "" {
 		info, err := os.Stat(cfg.Www)
 		if err != nil {
@@ -66,7 +53,7 @@ func runProxy(_ context.Context, cfg *proxyConfig) error {
 		}
 	}
 
-	server, err := proxy.NewServer(cfg.Www, apiPrefix, staticPrefix, filter, clientConfig, cfg.Keepalive, cfg.AppendServerPath)
+	server, err := proxy.NewServer(cfg.Www, cfg.APIPrefix, cfg.WwwPrefix, filter, clientConfig, cfg.Keepalive, cfg.AppendServerPath)
 	if err != nil {
 		return err
 	}

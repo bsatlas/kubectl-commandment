@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -12,46 +13,42 @@ import (
 )
 
 func runLogs(ctx context.Context, cfg *logsConfig) error {
+	logOptions := &v1.PodLogOptions{
+		Container:                    cfg.SelectedContainer,
+		Follow:                       cfg.Follow,
+		Previous:                     cfg.Previous,
+		Timestamps:                   cfg.Timestamps,
+		InsecureSkipTLSVerifyBackend: cfg.InsecureSkipTLSVerifyBackend,
+	}
+	if cfg.SinceTime != nil {
+		sinceTime := metaNow()
+		sinceTime.Time = *cfg.SinceTime
+		logOptions.SinceTime = &sinceTime
+	}
+	if cfg.LimitBytes != 0 {
+		limitBytes := cfg.LimitBytes
+		logOptions.LimitBytes = &limitBytes
+	}
+	if cfg.Since != 0 {
+		sinceSeconds := int64(cfg.Since.Round(time.Second).Seconds())
+		logOptions.SinceSeconds = &sinceSeconds
+	}
+	if cfg.Tail != -1 {
+		tail := cfg.Tail
+		logOptions.TailLines = &tail
+	}
+
 	options := logs.NewLogsOptions(cfg.Streams)
 	options.AllContainers = cfg.AllContainers
 	options.AllPods = cfg.AllPods
-	options.Container = cfg.Container
-	options.ContainerNameSpecified = explicitFlagValue(cfg.ContainerState)
 	options.Follow = cfg.Follow
 	options.IgnoreLogErrors = cfg.IgnoreErrors
-	options.InsecureSkipTLSVerifyBackend = cfg.InsecureSkipTLSVerifyBackend
-	options.LimitBytes = cfg.LimitBytes
 	options.MaxFollowConcurrency = cfg.MaxLogRequests
-	options.Prefix = cfg.Prefix
-	options.Previous = cfg.Previous
+	options.Prefix = cfg.EffectivePrefix
 	options.Selector = cfg.Selector
-	options.SinceSeconds = cfg.Since
-	options.SinceTime = cfg.SinceTime
-	options.Tail = cfg.Tail
-	options.TailSpecified = explicitFlagValue(cfg.TailState)
-	options.Timestamps = cfg.Timestamps
 	options.GetPodTimeout = cfg.PodRunningTimeout
-	options.Resources = append([]string(nil), cfg.Arguments...)
-
-	switch len(cfg.Arguments) {
-	case 0:
-		if cfg.Selector == "" {
-			return fmt.Errorf("POD or TYPE/NAME is a required argument for the logs command unless --selector is provided")
-		}
-	case 1:
-		options.ResourceArg = cfg.Arguments[0]
-		if cfg.Selector != "" {
-			return fmt.Errorf("only a selector (-l) or a POD name is allowed")
-		}
-	case 2:
-		options.ResourceArg = cfg.Arguments[0]
-		options.Container = cfg.Arguments[1]
-	default:
-		return fmt.Errorf("logs accepts at most a resource and container")
-	}
-	if options.AllPods {
-		options.Prefix = true
-	}
+	options.ResourceArg = cfg.Resource
+	options.Options = logOptions
 
 	factory := cfg.Client.factory()
 	namespace, _, err := factory.ToRawKubeConfigLoader().Namespace()
@@ -63,20 +60,16 @@ func runLogs(ctx context.Context, cfg *logsConfig) error {
 	options.RESTClientGetter = factory
 	options.LogsForObject = polymorphichelpers.LogsForObjectFn
 	options.AllPodLogsForObject = polymorphichelpers.AllPodLogsForObjectFn
-	options.Options, err = options.ToLogOptions()
-	if err != nil {
-		return err
-	}
 
 	builder := factory.NewBuilder().
 		WithScheme(scheme.Scheme, scheme.Scheme.PrioritizedVersionsAllGroups()...).
 		NamespaceParam(namespace).DefaultNamespace().
 		SingleResourceType()
-	if options.ResourceArg != "" {
-		builder = builder.ResourceNames("pods", options.ResourceArg)
+	if cfg.Resource != "" {
+		builder = builder.ResourceNames("pods", cfg.Resource)
 	}
-	if options.Selector != "" {
-		builder = builder.ResourceTypes("pods").LabelSelectorParam(options.Selector)
+	if cfg.Selector != "" {
+		builder = builder.ResourceTypes("pods").LabelSelectorParam(cfg.Selector)
 	}
 	infos, err := builder.Do().Infos()
 	if err != nil {
@@ -85,19 +78,16 @@ func runLogs(ctx context.Context, cfg *logsConfig) error {
 		}
 		return err
 	}
-	if options.Selector == "" && len(infos) != 1 {
+	if cfg.Selector == "" && len(infos) != 1 {
 		return fmt.Errorf("expected a resource")
 	}
 	options.Object = infos[0].Object
-	if options.Selector != "" {
+	if cfg.Selector != "" {
 		pods, ok := options.Object.(*v1.PodList)
 		if ok && len(pods.Items) == 0 {
 			fmt.Fprintf(options.ErrOut, "No resources found in %s namespace.\n", namespace)
 		}
 	}
 
-	if err := options.Validate(); err != nil {
-		return err
-	}
 	return options.RunLogsContext(ctx)
 }

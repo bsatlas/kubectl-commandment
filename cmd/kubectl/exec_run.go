@@ -12,13 +12,6 @@ import (
 )
 
 func runExec(_ context.Context, cfg *execConfig) error {
-	if cfg.Resource == "" && len(cfg.Filename) == 0 {
-		return fmt.Errorf("pod, type/name or --filename must be specified")
-	}
-	if cfg.PodRunningTimeout <= 0 {
-		return fmt.Errorf("--pod-running-timeout must be higher than zero")
-	}
-
 	factory := cfg.Client.factory()
 	namespace, enforceNamespace, err := factory.ToRawKubeConfigLoader().Namespace()
 	if err != nil {
@@ -71,9 +64,6 @@ func runExec(_ context.Context, cfg *execConfig) error {
 		PodClient:     clientset.CoreV1(),
 		GetPodTimeout: cfg.PodRunningTimeout,
 		Config:        restConfig,
-	}
-	if err := options.Validate(); err != nil {
-		return err
 	}
 	return options.Run()
 }

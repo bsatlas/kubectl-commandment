@@ -49,7 +49,6 @@ func attachCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command
 			cb.Access.Stdin(&cb.Config.Streams.In)
 			cb.Access.Stdout(&cb.Config.Streams.Out)
 			cb.Access.Stderr(&cb.Config.Streams.ErrOut)
-
 			arguments := cb.Values.Sequence(&cb.Config.Arguments, cli.Value.String())
 			cb.Arguments.Form(func(form *cli.ArgumentFormBuilder[attachConfig]) {
 				form.Sequence(arguments, "resource", cli.Count.Between(1, 2)).
@@ -58,34 +57,29 @@ func attachCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command
 					)).
 					From(client)
 			})
-
 			containerFlag := cb.Flags.String(&cb.Config.Container)
-			containerFlag = containerFlag.Description("Container name. If omitted, use the kubectl.kubernetes.io/default-container annotation for selecting the container to be attached or the first container in the pod will be chosen")
+			containerFlag.Description("Container name. If omitted, use the kubectl.kubernetes.io/default-container annotation for selecting the container to be attached or the first container in the pod will be chosen")
 			containerFlag.Long("container")
 			containerFlag.Short('c')
-
 			detachKeysFlag := cb.Flags.String(&cb.Config.DetachKeys)
-			detachKeysFlag = detachKeysFlag.Description("Override the key sequence for detaching a container")
+			detachKeysFlag.Description("Override the key sequence for detaching a container")
 			cb.Values.Default(detachKeysFlag, "ctrl-p,ctrl-q")
 			detachKeysFlag.Long("detach-keys")
-
 			podRunningTimeoutFlag := cb.Flags.Value(&cb.Config.PodRunningTimeout, durationLanguage())
-			podRunningTimeoutFlag = podRunningTimeoutFlag.Description("The length of time (like 5s, 2m, or 3h, higher than zero) to wait until at least one pod is running")
+			podRunningTimeoutFlag.Description("The length of time (like 5s, 2m, or 3h, higher than zero) to wait until at least one pod is running")
 			cb.Values.Default(podRunningTimeoutFlag, time.Minute)
 			podRunningTimeoutFlag.Long("pod-running-timeout")
-
+			cb.Rule.GreaterThan(podRunningTimeoutFlag.Destination(), time.Duration(0))
 			quietFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Quiet))
-			quietFlag = quietFlag.Description("Only print output from the remote session")
+			quietFlag.Description("Only print output from the remote session")
 			quietFlag.Long("quiet").ImplicitValue(true)
 			quietFlag.Short('q').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
-
 			stdinFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Stdin))
-			stdinFlag = stdinFlag.Description("Pass stdin to the container")
+			stdinFlag.Description("Pass stdin to the container")
 			stdinFlag.Long("stdin").ImplicitValue(true)
 			stdinFlag.Short('i').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
-
 			ttyFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.TTY))
-			ttyFlag = ttyFlag.Description("Stdin is a TTY")
+			ttyFlag.Description("Stdin is a TTY")
 			ttyFlag.Long("tty").ImplicitValue(true)
 			ttyFlag.Short('t').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
 		},

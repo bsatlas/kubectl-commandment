@@ -24,9 +24,11 @@ import (
 	"sort"
 	"time"
 
-	"github.com/distribution/reference"
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/rand"
@@ -37,6 +39,8 @@ import (
 	"k8s.io/cli-runtime/pkg/printers"
 	"k8s.io/cli-runtime/pkg/resource"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/cache"
+	watchtools "k8s.io/client-go/tools/watch"
 	"k8s.io/klog/v2"
 	"k8s.io/kubectl/pkg/cmd/attach"
 	"k8s.io/kubectl/pkg/cmd/debug"
@@ -53,7 +57,6 @@ type debugOperation struct {
 	Args                  []string
 	ArgsOnly              bool
 	Attach                bool
-	AttachChanged         bool
 	Container             string
 	CopyTo                string
 	Replace               bool
@@ -107,12 +110,6 @@ func runDebug(ctx context.Context, cfg *debugConfig) error {
 		return err
 	}
 
-	attachChanged := explicitFlagValue(cfg.AttachState)
-	attach := cfg.Attach
-	if !attachChanged && cfg.Stdin {
-		attach = true
-	}
-
 	env := make([]v1.EnvVar, 0, len(cfg.Env))
 	names := make([]string, 0, len(cfg.Env))
 	for name := range cfg.Env {
@@ -142,8 +139,7 @@ func runDebug(ctx context.Context, cfg *debugConfig) error {
 	operation := debugOperation{
 		Args:                  append([]string(nil), cfg.Arguments...),
 		ArgsOnly:              cfg.ArgumentsOnly,
-		Attach:                attach,
-		AttachChanged:         attachChanged,
+		Attach:                cfg.Attach,
 		Container:             cfg.Container,
 		CopyTo:                cfg.CopyTo,
 		Replace:               cfg.Replace,
@@ -159,7 +155,7 @@ func runDebug(ctx context.Context, cfg *debugConfig) error {
 		Namespace:             namespace,
 		ExplicitNamespace:     explicitNamespace,
 		TargetNames:           append([]string(nil), cfg.TargetNames...),
-		PullPolicy:            v1.PullPolicy(cfg.ImagePullPolicy),
+		PullPolicy:            cfg.ImagePullPolicy,
 		Quiet:                 cfg.Quiet,
 		SameNode:              cfg.SameNode,
 		SetImages:             cfg.SetImage,
@@ -199,71 +195,15 @@ func runDebug(ctx context.Context, cfg *debugConfig) error {
 		operation.CustomProfile = container
 	}
 
-	if err := operation.validate(); err != nil {
-		return err
+	if operation.TargetContainer != "" && !operation.Quiet {
+		_, _ = fmt.Fprintf(operation.Streams.Out, "Targeting container %q. If you don't see processes from this container it may be because the container runtime doesn't support this feature.\n", operation.TargetContainer)
 	}
-	return operation.run(ctx)
-}
-
-func (o *debugOperation) validate() error {
-	if o.Attach && o.AttachChanged && o.Image == "" && o.Container == "" {
-		return fmt.Errorf("you must specify --container or create a new container using --image in order to attach.")
-	}
-	if o.CopyTo != "" {
-		if o.Image == "" && len(o.SetImages) == 0 && len(o.Args) == 0 {
-			return fmt.Errorf("you must specify --image, --set-image or command arguments.")
-		}
-		if len(o.Args) > 0 && o.Container == "" && o.Image == "" {
-			return fmt.Errorf("you must specify an existing container or a new image when specifying args.")
-		}
-	} else {
-		switch {
-		case o.Replace:
-			return fmt.Errorf("--replace may only be used with --copy-to.")
-		case o.SameNode:
-			return fmt.Errorf("--same-node may only be used with --copy-to.")
-		case len(o.SetImages) > 0:
-			return fmt.Errorf("--set-image may only be used with --copy-to.")
-		case o.Image == "":
-			return fmt.Errorf("you must specify --image when not using --copy-to.")
-		}
-	}
-	if o.Image != "" && !reference.ReferenceRegexp.MatchString(o.Image) {
-		return fmt.Errorf("invalid image name %q: %v", o.Image, reference.ErrReferenceInvalidFormat)
-	}
-	if len(o.TargetNames) == 0 && len(o.Filename.Filenames) == 0 {
-		return fmt.Errorf("NAME or filename is required for debug")
-	}
-	switch o.PullPolicy {
-	case v1.PullAlways, v1.PullIfNotPresent, v1.PullNever, "":
-	default:
-		return fmt.Errorf("invalid image pull policy: %s", o.PullPolicy)
-	}
-	for name, image := range o.SetImages {
-		if !reference.ReferenceRegexp.MatchString(image) {
-			return fmt.Errorf("invalid image name %q for container %q: %v", image, name, reference.ErrReferenceInvalidFormat)
-		}
-	}
-	if o.TargetContainer != "" {
-		if o.CopyTo != "" {
-			return fmt.Errorf("--target is incompatible with --copy-to. Use --share-processes instead.")
-		}
-		if !o.Quiet {
-			_, _ = fmt.Fprintf(o.Streams.Out, "Targeting container %q. If you don't see processes from this container it may be because the container runtime doesn't support this feature.\n", o.TargetContainer)
-		}
-	}
-	if o.TTY && !o.Interactive {
-		return fmt.Errorf("-i/--stdin is required for containers with -t/--tty=true")
-	}
-	if o.CustomProfile != nil {
-		if o.CustomProfile.Name != "" || len(o.CustomProfile.Command) > 0 || o.CustomProfile.Image != "" || o.CustomProfile.Lifecycle != nil || len(o.CustomProfile.VolumeDevices) > 0 {
+	if operation.CustomProfile != nil {
+		if operation.CustomProfile.Name != "" || len(operation.CustomProfile.Command) > 0 || operation.CustomProfile.Image != "" || operation.CustomProfile.Lifecycle != nil || len(operation.CustomProfile.VolumeDevices) > 0 {
 			return fmt.Errorf("name, command, image, lifecycle and volume devices are not modifiable via custom profile")
 		}
 	}
-	if o.Profile == debug.ProfileLegacy {
-		_, _ = fmt.Fprintln(o.Streams.ErrOut, `--profile=legacy is deprecated and planned to be removed in v1.39. It is recommended to specify other profile, for example "--profile=general".`)
-	}
-	return nil
+	return operation.run(ctx)
 }
 
 func (o *debugOperation) run(ctx context.Context) error {
@@ -306,7 +246,7 @@ func (o *debugOperation) visitNode(ctx context.Context, node *v1.Node) (*v1.Pod,
 	if err != nil {
 		return nil, "", err
 	}
-	newPod, err := pods.Create(ctx, debugPod, debugCreateOptions())
+	newPod, err := pods.Create(ctx, debugPod, metav1.CreateOptions{})
 	if err != nil {
 		return nil, "", err
 	}
@@ -354,11 +294,12 @@ func (o *debugOperation) debugByEphemeralContainer(ctx context.Context, pod *v1.
 	klog.V(2).Infof("generated strategic merge patch for debug container: %s", patch)
 
 	pods := o.Client.CoreV1().Pods(pod.Namespace)
-	result, err := pods.Patch(ctx, pod.Name, types.StrategicMergePatchType, patch, debugPatchOptions(), "ephemeralcontainers")
+	result, err := pods.Patch(ctx, pod.Name, types.StrategicMergePatchType, patch, metav1.PatchOptions{}, "ephemeralcontainers")
 	if err != nil {
 		// The apiserver will return a 404 when the EphemeralContainers feature is disabled because the `/ephemeralcontainers` subresource
 		// is missing. Unlike the 404 returned by a missing pod, the status details will be empty.
-		if debugEphemeralContainersDisabled(err) {
+		status, ok := err.(*errors.StatusError)
+		if ok && status.Status().Reason == metav1.StatusReasonNotFound && status.ErrStatus.Details.Name == "" {
 			return nil, "", fmt.Errorf("ephemeral containers are disabled for this cluster (error from server: %q)", err)
 		}
 
@@ -468,12 +409,12 @@ func (o *debugOperation) debugByCopy(ctx context.Context, pod *v1.Pod) (*v1.Pod,
 	}
 	o.displayWarning(debugContainer, copied)
 
-	created, err := o.Client.CoreV1().Pods(copied.Namespace).Create(ctx, copied, debugCreateOptions())
+	created, err := o.Client.CoreV1().Pods(copied.Namespace).Create(ctx, copied, metav1.CreateOptions{})
 	if err != nil {
 		return nil, "", err
 	}
 	if o.Replace {
-		err := o.Client.CoreV1().Pods(pod.Namespace).Delete(ctx, pod.Name, debugDeleteOptionsNow())
+		err := o.Client.CoreV1().Pods(pod.Namespace).Delete(ctx, pod.Name, *metav1.NewDeleteOptions(0))
 		if err != nil {
 			return nil, "", err
 		}
@@ -567,9 +508,12 @@ func (o *debugOperation) generateNodeDebugPod(node *v1.Node) (*v1.Pod, error) {
 	}
 
 	p := &v1.Pod{
-		ObjectMeta: debugObjectMeta(pn, "", map[string]string{
-			"app.kubernetes.io/managed-by": "kubectl-debug",
-		}, nil),
+		ObjectMeta: metav1.ObjectMeta{
+			Name: pn,
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by": "kubectl-debug",
+			},
+		},
 		Spec: v1.PodSpec{
 			Containers: []v1.Container{
 				{
@@ -615,8 +559,13 @@ func (o *debugOperation) generateNodeDebugPod(node *v1.Node) (*v1.Pod, error) {
 // generatePodCopyWithDebugContainer takes a Pod and returns a copy and the debug container name of that copy
 func (o *debugOperation) generatePodCopyWithDebugContainer(pod *v1.Pod) (*v1.Pod, string, error) {
 	copied := &v1.Pod{
-		ObjectMeta: debugObjectMeta(o.CopyTo, pod.Namespace, pod.Labels, pod.Annotations),
-		Spec:       *pod.Spec.DeepCopy(),
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        o.CopyTo,
+			Namespace:   pod.Namespace,
+			Labels:      pod.Labels,
+			Annotations: pod.Annotations,
+		},
+		Spec: *pod.Spec.DeepCopy(),
 	}
 	// set EphemeralContainers to nil so that the copy of pod can be created
 	copied.Spec.EphemeralContainers = nil
@@ -732,15 +681,25 @@ func debugContainerNameToRef(pod *v1.Pod) map[string]*v1.Container {
 // waitForContainer watches the given pod until the container is running
 func (o *debugOperation) waitForContainer(ctx context.Context, ns, podName, containerName string) (*v1.Pod, error) {
 	// TODO: expose the timeout
-	ctx, cancel := debugWatchContext(ctx, 0*time.Second)
+	ctx, cancel := watchtools.ContextWithOptionalTimeout(ctx, 0*time.Second)
 	defer cancel()
 
-	lw := debugPodListWatch(o.Client, ns, podName, ctx)
+	fieldSelector := fields.OneTermEqualSelector("metadata.name", podName).String()
+	listWatch := cache.ListWatch{
+		ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
+			options.FieldSelector = fieldSelector
+			return o.Client.CoreV1().Pods(ns).List(ctx, options)
+		},
+		WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
+			options.FieldSelector = fieldSelector
+			return o.Client.CoreV1().Pods(ns).Watch(ctx, options)
+		},
+	}
 
 	intr := interrupt.New(nil, cancel)
 	var result *v1.Pod
 	err := intr.Run(func() error {
-		object, err := debugUntilWithSync(ctx, lw, &v1.Pod{}, func(ev watch.Event) (bool, error) {
+		event, err := watchtools.UntilWithSync(ctx, &listWatch, &v1.Pod{}, nil, func(ev watch.Event) (bool, error) {
 			klog.V(2).Infof("watch received event %q with object %T", ev.Type, ev.Object)
 			switch ev.Type {
 			case watch.Deleted:
@@ -768,8 +727,8 @@ func (o *debugOperation) waitForContainer(ctx context.Context, ns, podName, cont
 			}
 			return false, nil
 		})
-		if object != nil {
-			result = object.(*v1.Pod)
+		if event != nil {
+			result = event.Object.(*v1.Pod)
 		}
 		return err
 	})

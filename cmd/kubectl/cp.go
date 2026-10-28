@@ -10,14 +10,91 @@ import (
 	"k8s.io/cli-runtime/pkg/genericiooptions"
 )
 
+type copyFileSpec struct {
+	PodName      string
+	PodNamespace string
+	File         string
+}
+
+func (spec copyFileSpec) String() string {
+	if spec.PodName == "" {
+		return spec.File
+	}
+	pod := spec.PodName
+	if spec.PodNamespace != "" {
+		pod = spec.PodNamespace + "/" + pod
+	}
+	return pod + ":" + spec.File
+}
+
 type cpConfig struct {
 	Client      clientConfig
 	Streams     genericiooptions.IOStreams
-	Source      string
-	Destination string
+	Source      copyFileSpec
+	Destination copyFileSpec
 	Container   string
 	NoPreserve  bool
 	Retries     int
+}
+
+func copyFileSpecLanguage() cli.ValueCodec[copyFileSpec] {
+	language := cli.ValueCodec[copyFileSpec]{
+		Name: "kubectl-copy-file-spec",
+		Parse: func(value string) (copyFileSpec, error) {
+			fileSpec, err := parseCopyFileSpec(value)
+			if err != nil {
+				return copyFileSpec{}, cli.Rejection.Message(
+					"file-spec",
+					err.Error(),
+					cli.Rejection.At(0, 0, len(value)),
+				)
+			}
+			return fileSpec, nil
+		},
+		Format: func(value copyFileSpec) string { return value.String() },
+		Snapshot: func(value copyFileSpec) copyFileSpec {
+			return value
+		},
+	}
+	return language
+}
+
+func parseCopyFileSpec(value string) (copyFileSpec, error) {
+	index := strings.Index(value, ":")
+	if index == 0 {
+		return copyFileSpec{}, fmt.Errorf("filespec must match the canonical format: [[namespace/]pod:]file/path")
+	}
+	if index == -1 {
+		if value == "" {
+			return copyFileSpec{}, fmt.Errorf("filepath can not be empty")
+		}
+		fileSpec := copyFileSpec{
+			File: value,
+		}
+		return fileSpec, nil
+	}
+	pod, file := value[:index], value[index+1:]
+	if file == "" {
+		return copyFileSpec{}, fmt.Errorf("filepath can not be empty")
+	}
+	pieces := strings.Split(pod, "/")
+	switch len(pieces) {
+	case 1:
+		fileSpec := copyFileSpec{
+			PodName: pieces[0],
+			File:    file,
+		}
+		return fileSpec, nil
+	case 2:
+		fileSpec := copyFileSpec{
+			PodNamespace: pieces[0],
+			PodName:      pieces[1],
+			File:         file,
+		}
+		return fileSpec, nil
+	default:
+		return copyFileSpec{}, fmt.Errorf("filespec must match the canonical format: [[namespace/]pod:]file/path")
+	}
 }
 
 func cpCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[cpConfig] {
@@ -58,26 +135,33 @@ func cpCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[cpC
 			cb.Access.Stdin(&cb.Config.Streams.In)
 			cb.Access.Stdout(&cb.Config.Streams.Out)
 			cb.Access.Stderr(&cb.Config.Streams.ErrOut)
-
+			var source, destination cli.Destination[cpConfig, copyFileSpec]
 			cb.Arguments.Form(func(form *cli.ArgumentFormBuilder[cpConfig]) {
-				form.String(&form.Config.Source, "file-spec-src").
-					CompleteBy(completeCopySource).
+				sourceArgument := form.Value(&form.Config.Source, "file-spec-src", copyFileSpecLanguage())
+				source = sourceArgument.Destination()
+				sourceArgument.CompleteBy(completeCopySource).
 					From(client).
 					FallbackTo(cli.CompletionNativeFiles)
-				form.String(&form.Config.Destination, "file-spec-dest").CompleteWith(cli.CompletionNativeFiles)
+				destinationArgument := form.Value(&form.Config.Destination, "file-spec-dest", copyFileSpecLanguage())
+				destination = destinationArgument.Destination()
+				destinationArgument.CompleteWith(cli.CompletionNativeFiles)
 			})
-
+			cb.Rule.Check("kubectl-cp-one-remote", func(_ context.Context, cfg *cpConfig, _ cli.Dependencies) (bool, error) {
+				sourceRemote := cfg.Source.PodName != ""
+				destinationRemote := cfg.Destination.PodName != ""
+				return sourceRemote != destinationRemote, nil
+			}).
+				DependsOn(source).
+				DependsOn(destination)
 			containerFlag := cb.Flags.String(&cb.Config.Container)
-			containerFlag = containerFlag.Description("Container name. If omitted, use the kubectl.kubernetes.io/default-container annotation for selecting the container to be attached or the first container in the pod will be chosen")
+			containerFlag.Description("Container name. If omitted, use the kubectl.kubernetes.io/default-container annotation for selecting the container to be attached or the first container in the pod will be chosen")
 			containerFlag.Long("container")
 			containerFlag.Short('c')
-
 			noPreserveFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.NoPreserve))
-			noPreserveFlag = noPreserveFlag.Description("The copied file/directory's ownership and permissions will not be preserved in the container")
+			noPreserveFlag.Description("The copied file/directory's ownership and permissions will not be preserved in the container")
 			noPreserveFlag.Long("no-preserve").ImplicitValue(true)
-
 			retriesFlag := cb.Flags.Int(&cb.Config.Retries)
-			retriesFlag = retriesFlag.Description("Set number of retries to complete a copy operation from a container. Specify 0 to disable or any negative value for infinite retrying. The default is 0 (no retry).")
+			retriesFlag.Description("Set number of retries to complete a copy operation from a container. Specify 0 to disable or any negative value for infinite retrying. The default is 0 (no retry).")
 			retriesFlag.Long("retries")
 		},
 		Run: runCopy,
@@ -93,7 +177,6 @@ func completeCopySource(ctx context.Context, cfg *cpConfig, request cli.ValueCom
 		}
 		return completion, nil
 	}
-
 	getter := restClientGetter(cfg.Client)
 	values := make([]string, 0)
 	if index := strings.Index(text, "/"); index > 0 {
@@ -144,7 +227,6 @@ func completeCopySource(ctx context.Context, cfg *cpConfig, request cli.ValueCom
 			values = append(values, "./", "/")
 		}
 	}
-
 	candidates := make([]cli.CompletionCandidate, 0, len(values))
 	for _, value := range values {
 		candidates = append(candidates, cli.CompletionCandidate{
