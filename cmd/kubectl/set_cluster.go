@@ -2,15 +2,9 @@ package main
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 
 	"github.com/abstractionsinc/commandment/cli"
-	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/client-go/tools/clientcmd/api"
 )
 
 type configSetClusterConfig struct {
@@ -65,9 +59,13 @@ func configSetClusterCommand(kubeconfig cli.Destination[rootConfig, string]) cli
 
 			name := cb.Values.String(&cb.Config.Name)
 			cb.Arguments.ValueFor(name, "NAME")
+			cb.Rule.NotEmpty(name)
 
 			certificateAuthority := cb.Values.String(&cb.Config.CertificateAuthority)
-			cb.Flags.ValueFor(certificateAuthority).Description("Path to certificate-authority file for the cluster entry in kubeconfig").Long("certificate-authority")
+			cb.Flags.ValueFor(certificateAuthority).
+				Description("Path to certificate-authority file for the cluster entry in kubeconfig").
+				CompleteWith(cli.CompletionNativeFiles).
+				Long("certificate-authority")
 			cb.Access.ValueState(certificateAuthority, &cb.Config.CertificateAuthorityState)
 
 			embedCerts := cb.Values.Bool(&cb.Config.EmbedCerts)
@@ -89,82 +87,15 @@ func configSetClusterCommand(kubeconfig cli.Destination[rootConfig, string]) cli
 			tlsServerName := cb.Values.String(&cb.Config.TLSServerName)
 			cb.Flags.ValueFor(tlsServerName).Description("tls-server-name for the cluster entry in kubeconfig").Long("tls-server-name")
 			cb.Access.ValueState(tlsServerName, &cb.Config.TLSServerNameState)
+
+			cb.Rule.When(cb.When.Equal(insecure, true)).Equal(certificateAuthority, "")
+			cb.Rule.Check("kubectl-config-set-cluster-embed-certs", func(_ context.Context, cfg *configSetClusterConfig, _ cli.Dependencies) (bool, error) {
+				return !cfg.EmbedCerts || cfg.CertificateAuthority != "", nil
+			}).
+				DependsOn(embedCerts.OptionalDependency()).
+				DependsOn(certificateAuthority.OptionalDependency())
 		},
 		Run: runConfigSetCluster,
 	}
 	return cmd
-}
-
-func runConfigSetCluster(_ context.Context, cfg *configSetClusterConfig) error {
-	if cfg.Name == "" {
-		return errors.New("you must specify a non-empty cluster name")
-	}
-	if cfg.InsecureSkipTLSVerify && cfg.CertificateAuthority != "" {
-		return errors.New("you cannot specify a certificate authority and insecure mode at the same time")
-	}
-	if cfg.EmbedCerts {
-		if cfg.CertificateAuthority == "" {
-			return fmt.Errorf("you must specify a --%s to embed", clientcmd.FlagCAFile)
-		}
-		if _, err := os.Stat(cfg.CertificateAuthority); err != nil {
-			return fmt.Errorf("could not stat %s file %s: %v", clientcmd.FlagCAFile, cfg.CertificateAuthority, err)
-		}
-	}
-
-	access := configAccess(cfg.Kubeconfig)
-	config, err := access.GetStartingConfig()
-	if err != nil {
-		return err
-	}
-
-	cluster, exists := config.Clusters[cfg.Name]
-	if !exists {
-		cluster = api.NewCluster()
-	}
-	modified := *cluster
-
-	if flagProvided(cfg.ServerState) {
-		modified.Server = cfg.Server
-		modified.TLSServerName = ""
-	}
-	if flagProvided(cfg.TLSServerNameState) {
-		modified.TLSServerName = cfg.TLSServerName
-	}
-	if flagProvided(cfg.InsecureState) {
-		modified.InsecureSkipTLSVerify = cfg.InsecureSkipTLSVerify
-		if modified.InsecureSkipTLSVerify {
-			modified.CertificateAuthority = ""
-			modified.CertificateAuthorityData = nil
-		}
-	}
-	if flagProvided(cfg.CertificateAuthorityState) {
-		if cfg.EmbedCerts {
-			modified.CertificateAuthorityData, err = os.ReadFile(cfg.CertificateAuthority)
-			if err != nil {
-				return err
-			}
-			modified.InsecureSkipTLSVerify = false
-			modified.CertificateAuthority = ""
-		} else {
-			path, pathErr := filepath.Abs(cfg.CertificateAuthority)
-			if pathErr != nil {
-				return pathErr
-			}
-			modified.CertificateAuthority = path
-			if path != "" {
-				modified.InsecureSkipTLSVerify = false
-				modified.CertificateAuthorityData = nil
-			}
-		}
-	}
-	if flagProvided(cfg.ProxyURLState) {
-		modified.ProxyURL = cfg.ProxyURL
-	}
-
-	config.Clusters[cfg.Name] = &modified
-	if err := clientcmd.ModifyConfig(access, *config, true); err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(cfg.Stdout, "Cluster %q set.\n", cfg.Name)
-	return err
 }

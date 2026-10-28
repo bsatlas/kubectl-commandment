@@ -1,14 +1,13 @@
 package main
 
 import (
-	"context"
-	"fmt"
 	"io"
 
 	"github.com/abstractionsinc/commandment/cli"
 )
 
 type configGetUsersConfig struct {
+	Ignored    []string
 	Kubeconfig string
 	Stdout     io.Writer
 }
@@ -29,24 +28,10 @@ func configGetUsersCommand(kubeconfig cli.Destination[rootConfig, string]) cli.C
 		Declare: func(cb *cli.CommandBuilder[configGetUsersConfig]) {
 			cb.Access.Value(kubeconfig, &cb.Config.Kubeconfig)
 			cb.Access.Stdout(&cb.Config.Stdout)
+			ignored := cb.Values.Sequence(&cb.Config.Ignored, cli.Value.String())
+			cb.Arguments.Remainder(ignored, "ARG", cli.Count.ZeroOrMore()).Hidden()
 		},
 		Run: runConfigGetUsers,
 	}
 	return cmd
-}
-
-func runConfigGetUsers(_ context.Context, cfg *configGetUsersConfig) error {
-	names, err := userNames(cfg.Kubeconfig)
-	if err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintln(cfg.Stdout, "NAME"); err != nil {
-		return err
-	}
-	for _, name := range names {
-		if _, err := fmt.Fprintln(cfg.Stdout, name); err != nil {
-			return err
-		}
-	}
-	return nil
 }

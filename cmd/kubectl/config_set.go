@@ -2,20 +2,174 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 
 	"github.com/abstractionsinc/commandment/cli"
-	"k8s.io/client-go/tools/clientcmd"
 )
 
+type configSetValueKind uint8
+
+const (
+	configSetValueUnknown configSetValueKind = iota
+	configSetValueString
+	configSetValueBool
+	configSetValueBytes
+)
+
+type configSetAssignment struct {
+	Property     configProperty
+	Text         string
+	Kind         configSetValueKind
+	Bool         bool
+	DecodedBytes string
+	Base64Valid  bool
+}
+
 type configSetConfig struct {
-	Kubeconfig    string
-	PropertyName  string
-	PropertyValue string
-	SetRawBytes   bool
-	Stdout        io.Writer
+	Kubeconfig  string
+	Assignment  configSetAssignment
+	SetRawBytes bool
+	Stdout      io.Writer
+}
+
+func configSetAssignmentValueLanguage() cli.ValueCodec[configSetAssignment] {
+	language := cli.ValueCodec[configSetAssignment]{
+		Name: "kubectl-config-set-assignment-value",
+		Parse: func(text string) (configSetAssignment, error) {
+			return configSetAssignment{}, fmt.Errorf("config set assignment value language must not parse token input %q", text)
+		},
+		Format: func(assignment configSetAssignment) string {
+			return assignment.Property.Path + " " + assignment.Text
+		},
+		Snapshot: cli.Value.Assign[configSetAssignment](),
+	}
+	return language
+}
+
+func configSetAssignmentLanguage() cli.TokenLanguage[configSetAssignment] {
+	language := cli.TokenLanguage[configSetAssignment]{
+		Name:   "kubectl-config-set-assignment",
+		Count:  cli.Count.Exactly(2),
+		Syntax: []string{"PROPERTY_NAME", "PROPERTY_VALUE"},
+		Parse: func(_ context.Context, tokens []string) (configSetAssignment, error) {
+			property, err := parseConfigProperty(tokens[0])
+			if err != nil {
+				return configSetAssignment{}, cli.Rejection.Message(
+					"kubeconfig-property",
+					err.Error(),
+					cli.Rejection.At(0, 0, len(tokens[0])),
+				)
+			}
+			if tokens[1] == "" {
+				return configSetAssignment{}, cli.Rejection.Message(
+					"kubeconfig-property-value",
+					"you cannot use set to unset a property",
+					cli.Rejection.At(1, 0, 0),
+				)
+			}
+
+			kind, err := configSetPropertyValueKind(property)
+			if err != nil {
+				return configSetAssignment{}, cli.Rejection.Message(
+					"kubeconfig-property",
+					err.Error(),
+					cli.Rejection.At(0, 0, len(tokens[0])),
+				)
+			}
+
+			assignment := configSetAssignment{
+				Property:    property,
+				Text:        tokens[1],
+				Kind:        kind,
+				Base64Valid: true,
+			}
+			switch kind {
+			case configSetValueString:
+			case configSetValueBool:
+				assignment.Bool, err = strconv.ParseBool(tokens[1])
+				if err != nil {
+					return configSetAssignment{}, cli.Rejection.Message(
+						"kubeconfig-property-value",
+						err.Error(),
+						cli.Rejection.At(1, 0, len(tokens[1])),
+					)
+				}
+			case configSetValueBytes:
+				decoded, decodeErr := base64.StdEncoding.DecodeString(tokens[1])
+				assignment.Base64Valid = decodeErr == nil
+				if decodeErr == nil {
+					assignment.DecodedBytes = string(decoded)
+				}
+			default:
+				return configSetAssignment{}, errors.New("unsupported kubeconfig property value kind")
+			}
+			return assignment, nil
+		},
+		Format: func(assignment configSetAssignment) []string {
+			return []string{assignment.Property.Path, assignment.Text}
+		},
+	}
+	return language
+}
+
+func configSetPropertyValueKind(property configProperty) (configSetValueKind, error) {
+	switch property.Root {
+	case configPropertyRootKind, configPropertyRootAPIVersion, configPropertyRootCurrentContext:
+		return configSetValueString, nil
+	case configPropertyRootPreferences:
+		if property.HasField && property.Field == "colors" {
+			return configSetValueBool, nil
+		}
+		return configSetValueUnknown, errors.New("can't set a map or structure to a value")
+	case configPropertyRootClusters:
+		if !property.HasName || !property.HasField {
+			return configSetValueUnknown, errors.New("can't set a map to a value")
+		}
+		switch property.Field {
+		case "server", "tls-server-name", "certificate-authority", "proxy-url":
+			return configSetValueString, nil
+		case "insecure-skip-tls-verify", "disable-compression":
+			return configSetValueBool, nil
+		case "certificate-authority-data":
+			return configSetValueBytes, nil
+		default:
+			return configSetValueUnknown, unsupportedConfigProperty(property.Path)
+		}
+	case configPropertyRootUsers:
+		if !property.HasName || !property.HasField {
+			return configSetValueUnknown, errors.New("can't set a map to a value")
+		}
+		switch property.Field {
+		case "client-certificate", "client-key", "token", "tokenFile", "act-as", "act-as-uid", "username", "password":
+			return configSetValueString, nil
+		case "client-certificate-data", "client-key-data":
+			return configSetValueBytes, nil
+		case "act-as-groups":
+			return configSetValueUnknown, errors.New("unrecognized slice type. string")
+		default:
+			return configSetValueUnknown, unsupportedConfigProperty(property.Path)
+		}
+	case configPropertyRootContexts:
+		if !property.HasName || !property.HasField {
+			return configSetValueUnknown, errors.New("can't set a map to a value")
+		}
+		switch property.Field {
+		case "cluster", "user", "namespace":
+			return configSetValueString, nil
+		default:
+			return configSetValueUnknown, unsupportedConfigProperty(property.Path)
+		}
+	case configPropertyRootExtensions:
+		return configSetValueUnknown, errors.New("can't set a map to a value")
+	case configPropertyRootUnknown:
+		return configSetValueUnknown, unsupportedConfigProperty(property.Path)
+	default:
+		return configSetValueUnknown, unsupportedConfigProperty(property.Path)
+	}
 }
 
 func configSetCommand(kubeconfig cli.Destination[rootConfig, string]) cli.Command[configSetConfig] {
@@ -23,7 +177,7 @@ func configSetCommand(kubeconfig cli.Destination[rootConfig, string]) cli.Comman
 		Name: "set",
 		Description: cli.Description{
 			Short: "Set an individual value in a kubeconfig file",
-			Long:  "Set an individual value in a kubeconfig file.\n\n PROPERTY_NAME is a dot delimited name where each token represents either an attribute name or a map key.  Map keys may not contain dots.\n\n PROPERTY_VALUE is the new value you want to set. Binary fields such as 'certificate-authority-data' expect a base64 encoded string unless the --set-raw-bytes flag is used.\n\n Specifying an attribute name that already exists will merge new fields on top of existing values.",
+			Long:  "Set an individual value in a kubeconfig file.\n\n PROPERTY_NAME identifies a kubeconfig field or map entry. Dots separate structural fields; map keys themselves may contain dots.\n\n PROPERTY_VALUE is the new value you want to set. Binary fields such as 'certificate-authority-data' expect a base64 encoded string unless the --set-raw-bytes flag is used.\n\n Specifying an attribute name that already exists will merge new fields on top of existing values.",
 		},
 		Examples: []cli.Example{
 			{
@@ -47,38 +201,21 @@ func configSetCommand(kubeconfig cli.Destination[rootConfig, string]) cli.Comman
 			cb.Access.Value(kubeconfig, &cb.Config.Kubeconfig)
 			cb.Access.Stdout(&cb.Config.Stdout)
 
-			propertyName := cb.Values.String(&cb.Config.PropertyName)
-			cb.Arguments.ValueFor(propertyName, "PROPERTY_NAME")
-			propertyValue := cb.Values.String(&cb.Config.PropertyValue)
-			cb.Arguments.ValueFor(propertyValue, "PROPERTY_VALUE")
+			assignment := cb.Values.Value(&cb.Config.Assignment, configSetAssignmentValueLanguage())
+			cb.Arguments.Tokens(assignment, "PROPERTY", configSetAssignmentLanguage())
 
-			setRawBytes := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.SetRawBytes))
-			setRawBytes.Description("When writing a []byte PROPERTY_VALUE, write the given string directly without base64 decoding.").Long("set-raw-bytes").ImplicitValue(true)
+			setRawBytes := cb.Values.Bool(&cb.Config.SetRawBytes)
+			cb.Flags.ValueFor(setRawBytes).
+				Description("When writing a []byte PROPERTY_VALUE, write the given string directly without base64 decoding.").
+				Long("set-raw-bytes").
+				ImplicitValue(true)
+			cb.Rule.Check("kubectl-config-set-base64", func(_ context.Context, cfg *configSetConfig, _ cli.Dependencies) (bool, error) {
+				return cfg.Assignment.Kind != configSetValueBytes || cfg.SetRawBytes || cfg.Assignment.Base64Valid, nil
+			}).
+				Subject(assignment).
+				DependsOn(setRawBytes.OptionalDependency())
 		},
 		Run: runConfigSet,
 	}
 	return cmd
-}
-
-func runConfigSet(_ context.Context, cfg *configSetConfig) error {
-	if cfg.PropertyValue == "" {
-		return errors.New("you cannot use set to unset a property")
-	}
-	if cfg.PropertyName == "" {
-		return errors.New("you must specify a property")
-	}
-
-	access := configAccess(cfg.Kubeconfig)
-	config, err := access.GetStartingConfig()
-	if err != nil {
-		return err
-	}
-	if err := setConfigProperty(config, cfg.PropertyName, cfg.PropertyValue, cfg.SetRawBytes); err != nil {
-		return err
-	}
-	if err := clientcmd.ModifyConfig(access, *config, false); err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(cfg.Stdout, "Property %q set.\n", cfg.PropertyName)
-	return err
 }

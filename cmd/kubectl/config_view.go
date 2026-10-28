@@ -3,14 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"strings"
 
 	"github.com/abstractionsinc/commandment/cli"
-	"k8s.io/cli-runtime/pkg/genericclioptions"
-	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/client-go/tools/clientcmd/api"
-	"k8s.io/client-go/tools/clientcmd/api/latest"
-	"k8s.io/kubectl/pkg/scheme"
 )
 
 type configViewConfig struct {
@@ -24,9 +21,61 @@ type configViewConfig struct {
 	Raw                      bool
 	ShowManagedFields        bool
 	Template                 string
-	MergeState               cli.OptionalValue[cli.ValueState]
 	OutputState              cli.OptionalValue[cli.ValueState]
 	Stdout                   io.Writer
+}
+
+func configViewTemplateOutput(format string) bool {
+	switch format {
+	case "go-template", "go-template-file", "template", "templatefile", "jsonpath", "jsonpath-as-json", "jsonpath-file":
+		return true
+	default:
+		return false
+	}
+}
+
+func configViewOutputTemplateCompatible(output, template string) bool {
+	format, payload, parameterized := strings.Cut(output, "=")
+	if !configViewTemplateOutput(format) {
+		return true
+	}
+	if parameterized {
+		return payload != "" && template == ""
+	}
+	return template != ""
+}
+
+func configViewOutputLanguage() cli.ValueCodec[string] {
+	language := cli.ValueCodec[string]{
+		Name: "kubectl-config-view-output-format",
+		Parse: func(value string) (string, error) {
+			if value == "" {
+				return value, nil
+			}
+			normalized := strings.ToLower(value)
+			switch normalized {
+			case "json", "yaml", "kyaml", "name":
+				return normalized, nil
+			}
+
+			format, payload, parameterized := strings.Cut(value, "=")
+			switch format {
+			case "go-template", "go-template-file", "template", "templatefile", "jsonpath", "jsonpath-as-json", "jsonpath-file":
+				if !parameterized || payload != "" {
+					return value, nil
+				}
+			}
+
+			return "", cli.Rejection.Message(
+				"config-view-output-format",
+				fmt.Sprintf("unsupported output format %q", value),
+				cli.Rejection.At(0, 0, len(value)),
+			)
+		},
+		Format:   func(value string) string { return value },
+		Snapshot: func(value string) string { return value },
+	}
+	return language
 }
 
 func configViewCommand(kubeconfig, contextName cli.Destination[rootConfig, string]) cli.Command[configViewConfig] {
@@ -51,7 +100,7 @@ func configViewCommand(kubeconfig, contextName cli.Destination[rootConfig, strin
 			},
 		},
 		Declare: func(cb *cli.CommandBuilder[configViewConfig]) {
-			cb.Access.Value(kubeconfig, &cb.Config.Kubeconfig)
+			kubeconfig := deriveKubeconfig(cb, &cb.Config.Kubeconfig, kubeconfig)
 			cb.Access.Value(contextName, &cb.Config.Context)
 			cb.Access.Stdout(&cb.Config.Stdout)
 
@@ -63,88 +112,49 @@ func configViewCommand(kubeconfig, contextName cli.Destination[rootConfig, strin
 			flatten.Description("Flatten the resulting kubeconfig file into self-contained output (useful for creating portable kubeconfig files)").Long("flatten").ImplicitValue(true)
 
 			merge := cb.Values.Bool(&cb.Config.Merge)
-			cb.Values.Default(merge, true)
+			cb.Values.ComputedDefault(merge, cli.Value.ComputedBy(func(_ context.Context, _ *configViewConfig, dependencies cli.Dependencies) (bool, error) {
+				path, ok := dependencies.Get(kubeconfig)
+				if !ok {
+					return false, errors.New("kubeconfig dependency is unavailable")
+				}
+				return path == "", nil
+			}).From(kubeconfig))
 			cb.Flags.ValueFor(merge).Description("Merge the full hierarchy of kubeconfig files").Long("merge").ImplicitValue(true)
-			cb.Access.ValueState(merge, &cb.Config.MergeState)
+			cb.Rule.Check("kubectl-config-view-merge", func(_ context.Context, cfg *configViewConfig, _ cli.Dependencies) (bool, error) {
+				return cfg.Merge || cfg.Kubeconfig != "", nil
+			}).
+				DependsOn(merge.OptionalDependency()).
+				DependsOn(kubeconfig.OptionalDependency())
 
 			minify := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Minify))
 			minify.Description("Remove all information not used by current-context from the output").Long("minify").ImplicitValue(true)
 
-			output := cb.Values.String(&cb.Config.Output)
+			output := cb.Values.Value(&cb.Config.Output, configViewOutputLanguage())
 			cb.Values.Default(output, "yaml")
 			outputFlag := cb.Flags.ValueFor(output).Description("Output format. One of: (json, yaml, kyaml, name, go-template, go-template-file, template, templatefile, jsonpath, jsonpath-as-json, jsonpath-file).")
 			outputFlag.Long("output")
 			outputFlag.Short('o')
 			cb.Access.ValueState(output, &cb.Config.OutputState)
 
+			template := cb.Flags.String(&cb.Config.Template)
+			template.
+				Description("Template string or path to template file to use when -o=go-template, -o=go-template-file. The template format is golang templates [http://golang.org/pkg/text/template/#pkg-overview].").
+				CompleteWith(cli.CompletionNativeFiles).
+				Long("template")
+			cb.Rule.When(cb.Rule.ContributedBy(output, cli.ValueProducerKindFlag)).
+				Check("kubectl-config-view-output-template", func(_ context.Context, cfg *configViewConfig, _ cli.Dependencies) (bool, error) {
+					return configViewOutputTemplateCompatible(cfg.Output, cfg.Template), nil
+				}).
+				Subject(output).
+				DependsOn(template.OptionalDependency())
+
 			raw := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Raw))
 			raw.Description("Display raw byte data and sensitive data").Long("raw").ImplicitValue(true)
 
 			showManagedFields := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowManagedFields))
 			showManagedFields.Description("If true, keep the managedFields when printing objects in JSON or YAML format.").Long("show-managed-fields").ImplicitValue(true)
-
-			template := cb.Flags.String(&cb.Config.Template)
-			template.Description("Template string or path to template file to use when -o=go-template, -o=go-template-file. The template format is golang templates [http://golang.org/pkg/text/template/#pkg-overview].").Long("template")
 		},
 		Run: runConfigView,
 	}
 	return cmd
-}
-
-func runConfigView(_ context.Context, cfg *configViewConfig) error {
-	access := configAccess(cfg.Kubeconfig)
-	merge := cfg.Merge
-	if access.IsExplicitFile() && !flagProvided(cfg.MergeState) {
-		merge = false
-	}
-	if !merge && !access.IsExplicitFile() {
-		return errors.New("if merge==false a precise file must be specified")
-	}
-
-	var config *api.Config
-	var err error
-	if merge {
-		config, err = access.GetStartingConfig()
-	} else {
-		config, err = clientcmd.LoadFromFile(access.GetExplicitFile())
-	}
-	if err != nil {
-		return err
-	}
-
-	if cfg.Minify {
-		if cfg.Context != "" {
-			config.CurrentContext = cfg.Context
-		}
-		if err := api.MinifyConfig(config); err != nil {
-			return err
-		}
-	}
-	if cfg.Flatten {
-		if err := api.FlattenConfig(config); err != nil {
-			return err
-		}
-	} else if !cfg.Raw {
-		if err := api.RedactSecrets(config); err != nil {
-			return err
-		}
-		api.ShortenConfig(config)
-	}
-
-	flags := genericclioptions.NewPrintFlags("").WithTypeSetter(scheme.Scheme).WithDefaultOutput("yaml")
-	*flags.OutputFormat = cfg.Output
-	flags.OutputFlagSpecified = func() bool { return flagProvided(cfg.OutputState) }
-	flags.JSONYamlPrintFlags.ShowManagedFields = cfg.ShowManagedFields
-	*flags.TemplatePrinterFlags.TemplateArgument = cfg.Template
-	*flags.TemplatePrinterFlags.AllowMissingKeys = cfg.AllowMissingTemplateKeys
-	printer, err := flags.ToPrinter()
-	if err != nil {
-		return err
-	}
-
-	object, err := latest.Scheme.ConvertToVersion(config, latest.ExternalVersion)
-	if err != nil {
-		return err
-	}
-	return printer.PrintObj(object, cfg.Stdout)
 }

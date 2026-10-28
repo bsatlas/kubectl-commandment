@@ -1,33 +1,165 @@
 package main
 
 import (
+	"bytes"
 	"context"
-	"errors"
+	"encoding/csv"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/abstractionsinc/commandment/cli"
-	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/clientcmd/api"
-	"k8s.io/kubectl/pkg/cmd/util"
 )
+
+type configPair struct {
+	Name   string
+	Value  string
+	Remove bool
+}
+
+func parseConfigPair(name, text string) (configPair, error) {
+	if pairName, pairValue, ok := strings.Cut(text, "="); ok && pairName != "" {
+		pair := configPair{
+			Name:  pairName,
+			Value: pairValue,
+		}
+		return pair, nil
+	}
+	if pairName, ok := strings.CutSuffix(text, "-"); ok && pairName != "" {
+		pair := configPair{
+			Name:   pairName,
+			Remove: true,
+		}
+		return pair, nil
+	}
+	return configPair{}, cli.Rejection.Message(
+		cli.InputRejectionCode("invalid-"+name),
+		fmt.Sprintf("invalid %s format: %s", name, text),
+		cli.Rejection.At(0, 0, len(text)),
+	)
+}
+
+func formatConfigPair(pair configPair) string {
+	if pair.Remove {
+		return pair.Name + "-"
+	}
+	return pair.Name + "=" + pair.Value
+}
+
+func configPairLanguage(name string) cli.ValueCodec[configPair] {
+	language := cli.ValueCodec[configPair]{
+		Name:     name,
+		Parse:    func(text string) (configPair, error) { return parseConfigPair(name, text) },
+		Format:   formatConfigPair,
+		Snapshot: func(pair configPair) configPair { return pair },
+	}
+	return language
+}
+
+func parseConfigCSV(name, text string) ([]string, error) {
+	if text == "" {
+		return nil, nil
+	}
+	values, err := csv.NewReader(strings.NewReader(text)).Read()
+	if err != nil {
+		return nil, cli.Rejection.Message(
+			cli.InputRejectionCode("invalid-"+name),
+			fmt.Sprintf("invalid %s format: %v", name, err),
+			cli.Rejection.At(0, 0, len(text)),
+		)
+	}
+	return values, nil
+}
+
+func formatConfigCSV(values []string) string {
+	var buffer bytes.Buffer
+	writer := csv.NewWriter(&buffer)
+	if err := writer.Write(values); err != nil {
+		panic(err)
+	}
+	writer.Flush()
+	return strings.TrimSuffix(buffer.String(), "\n")
+}
+
+func configPairRecordLanguage(name string) cli.ValueCodec[[]configPair] {
+	language := cli.ValueCodec[[]configPair]{
+		Name: name,
+		Parse: func(text string) ([]configPair, error) {
+			values, err := parseConfigCSV(name, text)
+			if err != nil {
+				return nil, err
+			}
+			pairs := make([]configPair, 0, len(values))
+			for _, value := range values {
+				pair, err := parseConfigPair(name, value)
+				if err != nil {
+					return nil, err
+				}
+				pairs = append(pairs, pair)
+			}
+			return pairs, nil
+		},
+		Format: func(pairs []configPair) string {
+			values := make([]string, len(pairs))
+			for index, pair := range pairs {
+				values[index] = formatConfigPair(pair)
+			}
+			return formatConfigCSV(values)
+		},
+		Snapshot: func(pairs []configPair) []configPair { return slices.Clone(pairs) },
+	}
+	return language
+}
+
+func configStringRecordLanguage(name string) cli.ValueCodec[[]string] {
+	language := cli.ValueCodec[[]string]{
+		Name:     name,
+		Parse:    func(text string) ([]string, error) { return parseConfigCSV(name, text) },
+		Format:   formatConfigCSV,
+		Snapshot: func(values []string) []string { return slices.Clone(values) },
+	}
+	return language
+}
+
+func configExecInteractiveModeLanguage() cli.ValueCodec[api.ExecInteractiveMode] {
+	parse := func(text string) (api.ExecInteractiveMode, error) {
+		mode := api.ExecInteractiveMode(text)
+		switch mode {
+		case api.IfAvailableExecInteractiveMode, api.NeverExecInteractiveMode, api.AlwaysExecInteractiveMode:
+			return mode, nil
+		default:
+			err := cli.Rejection.Message(
+				cli.InputRejectionCode("invalid-exec-interactive-mode"),
+				"invalid interactive mode type, can be only IfAvailable, Never, Always",
+				cli.Rejection.At(0, 0, len(text)),
+			)
+			return "", err
+		}
+	}
+	language := cli.ValueCodec[api.ExecInteractiveMode]{
+		Name:     "exec-interactive-mode",
+		Parse:    parse,
+		Format:   func(mode api.ExecInteractiveMode) string { return string(mode) },
+		Snapshot: cli.Value.Assign[api.ExecInteractiveMode](),
+	}
+	return language
+}
 
 type configSetCredentialsConfig struct {
 	Kubeconfig              string
 	Name                    string
 	AuthProvider            string
-	AuthProviderArg         []string
+	AuthProviderArg         [][]configPair
 	ClientCertificate       string
 	ClientKey               string
 	EmbedCerts              bool
 	ExecAPIVersion          string
-	ExecArg                 []string
+	ExecArg                 [][]string
 	ExecCommand             string
-	ExecEnv                 []string
-	ExecInteractiveMode     string
+	ExecEnv                 []configPair
+	ExecInteractiveMode     api.ExecInteractiveMode
 	ExecProvideClusterInfo  bool
 	Password                string
 	Token                   string
@@ -104,20 +236,27 @@ func configSetCredentialsCommand(kubeconfig cli.Destination[rootConfig, string])
 
 			name := cb.Values.String(&cb.Config.Name)
 			cb.Arguments.ValueFor(name, "NAME")
+			cb.Rule.NotEmpty(name)
 
 			authProvider := cb.Values.String(&cb.Config.AuthProvider)
 			cb.Flags.ValueFor(authProvider).Description("Auth provider for the user entry in kubeconfig").Long("auth-provider")
 			cb.Access.ValueState(authProvider, &cb.Config.AuthProviderState)
 
-			authProviderArg := cb.Values.Sequence(&cb.Config.AuthProviderArg, cli.Value.String())
-			cb.Flags.Sequence(authProviderArg).DelimitedBy(",").Description("'key=value' arguments for the auth provider").Long("auth-provider-arg")
+			authProviderArg := cb.Values.Sequence(&cb.Config.AuthProviderArg, configPairRecordLanguage("auth-provider-arg"))
+			cb.Flags.Sequence(authProviderArg).Description("'key=value' arguments for the auth provider").Long("auth-provider-arg")
 
 			clientCertificate := cb.Values.String(&cb.Config.ClientCertificate)
-			cb.Flags.ValueFor(clientCertificate).Description("Path to client-certificate file for the user entry in kubeconfig").Long("client-certificate")
+			cb.Flags.ValueFor(clientCertificate).
+				Description("Path to client-certificate file for the user entry in kubeconfig").
+				CompleteWith(cli.CompletionNativeFiles).
+				Long("client-certificate")
 			cb.Access.ValueState(clientCertificate, &cb.Config.ClientCertificateState)
 
 			clientKey := cb.Values.String(&cb.Config.ClientKey)
-			cb.Flags.ValueFor(clientKey).Description("Path to client-key file for the user entry in kubeconfig").Long("client-key")
+			cb.Flags.ValueFor(clientKey).
+				Description("Path to client-key file for the user entry in kubeconfig").
+				CompleteWith(cli.CompletionNativeFiles).
+				Long("client-key")
 			cb.Access.ValueState(clientKey, &cb.Config.ClientKeyState)
 
 			embedCerts := cb.Values.Bool(&cb.Config.EmbedCerts)
@@ -127,17 +266,17 @@ func configSetCredentialsCommand(kubeconfig cli.Destination[rootConfig, string])
 			cb.Flags.ValueFor(execAPIVersion).Description("API version of the exec credential plugin for the user entry in kubeconfig").Long("exec-api-version")
 			cb.Access.ValueState(execAPIVersion, &cb.Config.ExecAPIVersionState)
 
-			execArg := cb.Values.Sequence(&cb.Config.ExecArg, cli.Value.String())
-			cb.Flags.Sequence(execArg).DelimitedBy(",").Description("New arguments for the exec credential plugin command for the user entry in kubeconfig").Long("exec-arg")
+			execArg := cb.Values.Sequence(&cb.Config.ExecArg, configStringRecordLanguage("exec-arg"))
+			cb.Flags.Sequence(execArg).Description("New arguments for the exec credential plugin command for the user entry in kubeconfig").Long("exec-arg")
 
 			execCommand := cb.Values.String(&cb.Config.ExecCommand)
 			cb.Flags.ValueFor(execCommand).Description("Command for the exec credential plugin for the user entry in kubeconfig").Long("exec-command")
 			cb.Access.ValueState(execCommand, &cb.Config.ExecCommandState)
 
-			execEnv := cb.Values.Sequence(&cb.Config.ExecEnv, cli.Value.String())
+			execEnv := cb.Values.Sequence(&cb.Config.ExecEnv, configPairLanguage("exec-env"))
 			cb.Flags.Sequence(execEnv).Description("'key=value' environment values for the exec credential plugin").Long("exec-env")
 
-			execInteractiveMode := cb.Values.String(&cb.Config.ExecInteractiveMode)
+			execInteractiveMode := cb.Values.Value(&cb.Config.ExecInteractiveMode, configExecInteractiveModeLanguage())
 			cb.Flags.ValueFor(execInteractiveMode).Description("InteractiveMode of the exec credentials plugin for the user entry in kubeconfig").Long("exec-interactive-mode")
 			cb.Access.ValueState(execInteractiveMode, &cb.Config.ExecInteractiveState)
 
@@ -156,218 +295,17 @@ func configSetCredentialsCommand(kubeconfig cli.Destination[rootConfig, string])
 			username := cb.Values.String(&cb.Config.Username)
 			cb.Flags.ValueFor(username).Description("username for the user entry in kubeconfig").Long("username")
 			cb.Access.ValueState(username, &cb.Config.UsernameState)
+
+			cb.Rule.When(cb.When.NotEqual(token, "")).Equal(username, "")
+			cb.Rule.When(cb.When.NotEqual(token, "")).Equal(password, "")
+			cb.Rule.Check("kubectl-config-set-credentials-embed-certs", func(_ context.Context, cfg *configSetCredentialsConfig, _ cli.Dependencies) (bool, error) {
+				return !cfg.EmbedCerts || cfg.ClientCertificate != "" || cfg.ClientKey != "", nil
+			}).
+				DependsOn(embedCerts.OptionalDependency()).
+				DependsOn(clientCertificate.OptionalDependency()).
+				DependsOn(clientKey.OptionalDependency())
 		},
 		Run: runConfigSetCredentials,
 	}
 	return cmd
-}
-
-func runConfigSetCredentials(_ context.Context, cfg *configSetCredentialsConfig) error {
-	if cfg.Name == "" {
-		return errors.New("you must specify a non-empty user name")
-	}
-	methods := make([]string, 0, 2)
-	if cfg.Token != "" {
-		methods = append(methods, "--token")
-	}
-	if cfg.Username != "" || cfg.Password != "" {
-		methods = append(methods, "--username/--password")
-	}
-	if len(methods) > 1 {
-		return fmt.Errorf("you cannot specify more than one authentication method at the same time: %v", strings.Join(methods, ", "))
-	}
-	if cfg.EmbedCerts {
-		if cfg.ClientCertificate == "" && cfg.ClientKey == "" {
-			return fmt.Errorf("you must specify a --%s or --%s to embed", clientcmd.FlagCertFile, clientcmd.FlagKeyFile)
-		}
-		if cfg.ClientCertificate != "" {
-			if _, err := os.Stat(cfg.ClientCertificate); err != nil {
-				return fmt.Errorf("could not stat %s file %s: %v", clientcmd.FlagCertFile, cfg.ClientCertificate, err)
-			}
-		}
-		if cfg.ClientKey != "" {
-			if _, err := os.Stat(cfg.ClientKey); err != nil {
-				return fmt.Errorf("could not stat %s file %s: %v", clientcmd.FlagKeyFile, cfg.ClientKey, err)
-			}
-		}
-	}
-	if flagProvided(cfg.ExecInteractiveState) {
-		mode := api.ExecInteractiveMode(cfg.ExecInteractiveMode)
-		if mode != api.IfAvailableExecInteractiveMode && mode != api.AlwaysExecInteractiveMode && mode != api.NeverExecInteractiveMode {
-			return errors.New("invalid interactive mode type, can be only IfAvailable, Never, Always")
-		}
-	}
-
-	authProviderArgs, authProviderRemovals, err := util.ParsePairs(cfg.AuthProviderArg, "auth-provider-arg", true)
-	if err != nil {
-		return err
-	}
-	execEnv, execEnvRemovals, err := util.ParsePairs(cfg.ExecEnv, "exec-env", true)
-	if err != nil {
-		return err
-	}
-
-	access := configAccess(cfg.Kubeconfig)
-	config, err := access.GetStartingConfig()
-	if err != nil {
-		return err
-	}
-	starting, exists := config.AuthInfos[cfg.Name]
-	if !exists {
-		starting = api.NewAuthInfo()
-	}
-	modified, err := modifyConfigAuthInfo(*starting, cfg, authProviderArgs, authProviderRemovals, execEnv, execEnvRemovals)
-	if err != nil {
-		return err
-	}
-	config.AuthInfos[cfg.Name] = &modified
-	if err := clientcmd.ModifyConfig(access, *config, true); err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(cfg.Stdout, "User %q set.\n", cfg.Name)
-	return err
-}
-
-func modifyConfigAuthInfo(existing api.AuthInfo, cfg *configSetCredentialsConfig, authProviderArgs map[string]string, authProviderRemovals []string, execEnv map[string]string, execEnvRemovals []string) (api.AuthInfo, error) {
-	modified := existing
-
-	if flagProvided(cfg.ClientCertificateState) {
-		path := cfg.ClientCertificate
-		if cfg.EmbedCerts {
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return api.AuthInfo{}, err
-			}
-			modified.ClientCertificateData = data
-			modified.ClientCertificate = ""
-		} else {
-			absolute, err := filepath.Abs(path)
-			if err != nil {
-				return api.AuthInfo{}, err
-			}
-			modified.ClientCertificate = absolute
-			if absolute != "" {
-				modified.ClientCertificateData = nil
-			}
-		}
-	}
-	if flagProvided(cfg.ClientKeyState) {
-		path := cfg.ClientKey
-		if cfg.EmbedCerts {
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return api.AuthInfo{}, err
-			}
-			modified.ClientKeyData = data
-			modified.ClientKey = ""
-		} else {
-			absolute, err := filepath.Abs(path)
-			if err != nil {
-				return api.AuthInfo{}, err
-			}
-			modified.ClientKey = absolute
-			if absolute != "" {
-				modified.ClientKeyData = nil
-			}
-		}
-	}
-
-	setToken := false
-	setBasic := false
-	if flagProvided(cfg.TokenState) {
-		modified.Token = cfg.Token
-		setToken = modified.Token != ""
-	}
-	if flagProvided(cfg.UsernameState) {
-		modified.Username = cfg.Username
-		setBasic = modified.Username != ""
-	}
-	if flagProvided(cfg.PasswordState) {
-		modified.Password = cfg.Password
-		setBasic = setBasic || modified.Password != ""
-	}
-
-	if flagProvided(cfg.AuthProviderState) {
-		if modified.AuthProvider == nil || modified.AuthProvider.Name != cfg.AuthProvider {
-			modified.AuthProvider = &api.AuthProviderConfig{
-				Name: cfg.AuthProvider,
-			}
-		}
-	}
-	if modified.AuthProvider != nil {
-		if modified.AuthProvider.Config == nil {
-			modified.AuthProvider.Config = make(map[string]string)
-		}
-		for _, key := range authProviderRemovals {
-			delete(modified.AuthProvider.Config, key)
-		}
-		for key, value := range authProviderArgs {
-			modified.AuthProvider.Config[key] = value
-		}
-	}
-
-	if flagProvided(cfg.ExecCommandState) {
-		if modified.Exec == nil {
-			modified.Exec = &api.ExecConfig{
-				Command: cfg.ExecCommand,
-			}
-		} else {
-			modified.Exec.Command = cfg.ExecCommand
-			modified.Exec.Args = nil
-		}
-	}
-	if modified.Exec != nil {
-		if flagProvided(cfg.ExecAPIVersionState) {
-			modified.Exec.APIVersion = cfg.ExecAPIVersion
-		}
-		if len(cfg.ExecArg) > 0 {
-			modified.Exec.Args = append([]string(nil), cfg.ExecArg...)
-		}
-		if flagProvided(cfg.ExecInteractiveState) {
-			modified.Exec.InteractiveMode = api.ExecInteractiveMode(cfg.ExecInteractiveMode)
-		}
-		if flagProvided(cfg.ExecProvideClusterState) {
-			modified.Exec.ProvideClusterInfo = cfg.ExecProvideClusterInfo
-		}
-		if len(execEnvRemovals) > 0 {
-			remove := make(map[string]struct{}, len(execEnvRemovals))
-			for _, name := range execEnvRemovals {
-				remove[name] = struct{}{}
-			}
-			kept := modified.Exec.Env[:0]
-			for _, variable := range modified.Exec.Env {
-				if _, found := remove[variable.Name]; !found {
-					kept = append(kept, variable)
-				}
-			}
-			modified.Exec.Env = kept
-		}
-		for name, value := range execEnv {
-			updated := false
-			for index := range modified.Exec.Env {
-				if modified.Exec.Env[index].Name == name {
-					modified.Exec.Env[index].Value = value
-					updated = true
-					break
-				}
-			}
-			if !updated {
-				modified.Exec.Env = append(modified.Exec.Env, api.ExecEnvVar{
-					Name:  name,
-					Value: value,
-				})
-			}
-		}
-	}
-
-	if setToken || setBasic {
-		if !setToken {
-			modified.Token = ""
-		}
-		if !setBasic {
-			modified.Username = ""
-			modified.Password = ""
-		}
-	}
-	return modified, nil
 }

@@ -2,13 +2,9 @@ package main
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"io"
 
 	"github.com/abstractionsinc/commandment/cli"
-	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/client-go/tools/clientcmd/api"
 )
 
 type configSetContextConfig struct {
@@ -39,13 +35,7 @@ func configSetContextCommand(kubeconfig cli.Destination[rootConfig, string], cli
 			},
 		},
 		Declare: func(cb *cli.CommandBuilder[configSetContextConfig]) {
-			kubeconfig := cb.Values.Derive(&cb.Config.Kubeconfig, cli.Value.ComputedBy(func(_ context.Context, _ *configSetContextConfig, dependencies cli.Dependencies) (string, error) {
-				value, ok := dependencies.Get(kubeconfig)
-				if !ok {
-					return "", fmt.Errorf("kubeconfig dependency is unavailable")
-				}
-				return value, nil
-			}).From(kubeconfig))
+			kubeconfig := deriveKubeconfig(cb, &cb.Config.Kubeconfig, kubeconfig)
 			client := deriveClientConfig(cb, &cb.Config.Client, client)
 			cb.Access.Stdout(&cb.Config.Stdout)
 
@@ -61,7 +51,8 @@ func configSetContextCommand(kubeconfig cli.Destination[rootConfig, string], cli
 			cb.Flags.ValueFor(cluster).Description("cluster for the context entry in kubeconfig").Long("cluster")
 			cb.Access.ValueState(cluster, &cb.Config.ClusterState)
 
-			current := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Current))
+			currentValue := cb.Values.Bool(&cb.Config.Current)
+			current := cb.Flags.ValueFor(currentValue)
 			current.Description("Modify the current context").Long("current").ImplicitValue(true)
 
 			namespace := cb.Values.String(&cb.Config.Namespace)
@@ -77,60 +68,18 @@ func configSetContextCommand(kubeconfig cli.Destination[rootConfig, string], cli
 			user := cb.Values.String(&cb.Config.User)
 			cb.Flags.ValueFor(user).Description("user for the context entry in kubeconfig").Long("user")
 			cb.Access.ValueState(user, &cb.Config.UserState)
+
+			cb.Rule.Check("kubectl-config-set-context-name", func(_ context.Context, cfg *configSetContextConfig, _ cli.Dependencies) (bool, error) {
+				name := ""
+				if len(cfg.Names) == 1 {
+					name = cfg.Names[0]
+				}
+				return (name == "") == cfg.Current, nil
+			}).
+				DependsOn(names.OptionalDependency()).
+				DependsOn(currentValue.OptionalDependency())
 		},
 		Run: runConfigSetContext,
 	}
 	return cmd
-}
-
-func runConfigSetContext(_ context.Context, cfg *configSetContextConfig) error {
-	if len(cfg.Names) == 0 && !cfg.Current {
-		return errors.New("you must specify a non-empty context name or --current")
-	}
-	if len(cfg.Names) > 0 && cfg.Current {
-		return errors.New("you cannot specify both a context name and --current")
-	}
-
-	access := configAccess(cfg.Kubeconfig)
-	config, err := access.GetStartingConfig()
-	if err != nil {
-		return err
-	}
-
-	name := ""
-	if len(cfg.Names) == 1 {
-		name = cfg.Names[0]
-	}
-	if cfg.Current {
-		if config.CurrentContext == "" {
-			return errors.New("no current context is set")
-		}
-		name = config.CurrentContext
-	}
-
-	starting, exists := config.Contexts[name]
-	if !exists {
-		starting = api.NewContext()
-	}
-	modified := *starting
-	if flagProvided(cfg.ClusterState) {
-		modified.Cluster = cfg.Cluster
-	}
-	if flagProvided(cfg.UserState) {
-		modified.AuthInfo = cfg.User
-	}
-	if flagProvided(cfg.NamespaceState) {
-		modified.Namespace = cfg.Namespace
-	}
-	config.Contexts[name] = &modified
-
-	if err := clientcmd.ModifyConfig(access, *config, true); err != nil {
-		return err
-	}
-	if exists {
-		_, err = fmt.Fprintf(cfg.Stdout, "Context %q modified.\n", name)
-	} else {
-		_, err = fmt.Fprintf(cfg.Stdout, "Context %q created.\n", name)
-	}
-	return err
 }

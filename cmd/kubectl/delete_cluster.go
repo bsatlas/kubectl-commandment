@@ -1,12 +1,9 @@
 package main
 
 import (
-	"context"
-	"fmt"
 	"io"
 
 	"github.com/abstractionsinc/commandment/cli"
-	"k8s.io/client-go/tools/clientcmd"
 )
 
 type configDeleteClusterConfig struct {
@@ -29,45 +26,18 @@ func configDeleteClusterCommand(kubeconfig cli.Destination[rootConfig, string]) 
 			},
 		},
 		Declare: func(cb *cli.CommandBuilder[configDeleteClusterConfig]) {
-			cb.Access.Value(kubeconfig, &cb.Config.Kubeconfig)
+			kubeconfig := deriveKubeconfig(cb, &cb.Config.Kubeconfig, kubeconfig)
 			cb.Access.Stdout(&cb.Config.Stdout)
 
-			clusters := cb.Values.Domain(func(_ context.Context, _ *configDeleteClusterConfig, dependencies cli.Dependencies, domain *cli.ValueDomainBuilder[string]) error {
-				path, ok := dependencies.Get(kubeconfig)
-				if !ok {
-					return fmt.Errorf("kubeconfig dependency is unavailable")
-				}
-				names, err := clusterNames(path)
-				if err != nil {
-					return err
-				}
-				for _, name := range names {
-					domain.Value(name, name)
-				}
-				return nil
-			}, kubeconfig)
-			name := cb.Values.Value(&cb.Config.Name, clusters)
-			cb.Arguments.ValueFor(name, "NAME")
+			name := cb.Values.String(&cb.Config.Name)
+			cb.Arguments.ValueFor(name, "NAME").
+				CompleteBy(kubeconfigNameCompleter(
+					func(cfg *configDeleteClusterConfig) string { return cfg.Kubeconfig },
+					kubeconfigClusterName,
+				)).
+				From(kubeconfig)
 		},
 		Run: runConfigDeleteCluster,
 	}
 	return cmd
-}
-
-func runConfigDeleteCluster(_ context.Context, cfg *configDeleteClusterConfig) error {
-	access := configAccess(cfg.Kubeconfig)
-	config, err := access.GetStartingConfig()
-	if err != nil {
-		return err
-	}
-	file := configFile(access)
-	if _, ok := config.Clusters[cfg.Name]; !ok {
-		return fmt.Errorf("cannot delete cluster %s, not in %s", cfg.Name, file)
-	}
-	delete(config.Clusters, cfg.Name)
-	if err := clientcmd.ModifyConfig(access, *config, true); err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(cfg.Stdout, "deleted cluster %s from %s\n", cfg.Name, file)
-	return err
 }

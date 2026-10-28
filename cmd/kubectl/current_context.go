@@ -1,14 +1,13 @@
 package main
 
 import (
-	"context"
-	"fmt"
 	"io"
 
 	"github.com/abstractionsinc/commandment/cli"
 )
 
 type currentContextConfig struct {
+	Ignored    []string
 	Kubeconfig string
 	Stdout     io.Writer
 }
@@ -29,20 +28,10 @@ func currentContextCommand(kubeconfig cli.Destination[rootConfig, string]) cli.C
 		Declare: func(command *cli.CommandBuilder[currentContextConfig]) {
 			command.Access.Value(kubeconfig, &command.Config.Kubeconfig)
 			command.Access.Stdout(&command.Config.Stdout)
+			ignored := command.Values.Sequence(&command.Config.Ignored, cli.Value.String())
+			command.Arguments.Remainder(ignored, "ARG", cli.Count.ZeroOrMore()).Hidden()
 		},
 		Run: runCurrentContext,
 	}
 	return cmd
-}
-
-func runCurrentContext(_ context.Context, cfg *currentContextConfig) error {
-	starting, err := configAccess(cfg.Kubeconfig).GetStartingConfig()
-	if err != nil {
-		return err
-	}
-	if starting.CurrentContext == "" {
-		return fmt.Errorf("current-context is not set")
-	}
-	_, err = fmt.Fprintln(cfg.Stdout, starting.CurrentContext)
-	return err
 }
