@@ -11,9 +11,7 @@ func TestConfigDeleteContextTreatsKnownNamesAsCompletionCandidates(t *testing.T)
 	t.Parallel()
 
 	path := writeConfigTestKubeconfig(t, "dev", "dev")
-	app := compileConfigTestApplication(t, func(config *cli.CommandBuilder[struct{}], destinations configTestDestinations) {
-		config.Subcommands.Command(configDeleteContextCommand(destinations.Kubeconfig))
-	})
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
 
 	inspectionRequest := cli.InspectionRequest{
 		Args: []string{"--kubeconfig", path, "config", "delete-context", "missing"},

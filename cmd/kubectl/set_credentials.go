@@ -6,7 +6,6 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
-	"slices"
 	"strings"
 
 	"github.com/abstractionsinc/commandment/cli"
@@ -83,11 +82,13 @@ func formatConfigCSV(values []string) string {
 	return strings.TrimSuffix(buffer.String(), "\n")
 }
 
-func configPairRecordLanguage(name string) cli.ValueCodec[[]configPair] {
-	language := cli.ValueCodec[[]configPair]{
-		Name: name,
-		Parse: func(text string) ([]configPair, error) {
-			values, err := parseConfigCSV(name, text)
+func configPairCSVLanguage(name string) cli.TokenLanguage[[]configPair] {
+	language := cli.TokenLanguage[[]configPair]{
+		Name:   name,
+		Count:  cli.Count.Exactly(1),
+		Syntax: []string{"CSV"},
+		Parse: func(_ context.Context, tokens []string) ([]configPair, error) {
+			values, err := parseConfigCSV(name, tokens[0])
 			if err != nil {
 				return nil, err
 			}
@@ -101,24 +102,28 @@ func configPairRecordLanguage(name string) cli.ValueCodec[[]configPair] {
 			}
 			return pairs, nil
 		},
-		Format: func(pairs []configPair) string {
+		Format: func(pairs []configPair) []string {
 			values := make([]string, len(pairs))
 			for index, pair := range pairs {
 				values[index] = formatConfigPair(pair)
 			}
-			return formatConfigCSV(values)
+			return []string{formatConfigCSV(values)}
 		},
-		Snapshot: func(pairs []configPair) []configPair { return slices.Clone(pairs) },
 	}
 	return language
 }
 
-func configStringRecordLanguage(name string) cli.ValueCodec[[]string] {
-	language := cli.ValueCodec[[]string]{
-		Name:     name,
-		Parse:    func(text string) ([]string, error) { return parseConfigCSV(name, text) },
-		Format:   formatConfigCSV,
-		Snapshot: func(values []string) []string { return slices.Clone(values) },
+func configStringCSVLanguage(name string) cli.TokenLanguage[[]string] {
+	language := cli.TokenLanguage[[]string]{
+		Name:   name,
+		Count:  cli.Count.Exactly(1),
+		Syntax: []string{"CSV"},
+		Parse: func(_ context.Context, tokens []string) ([]string, error) {
+			return parseConfigCSV(name, tokens[0])
+		},
+		Format: func(values []string) []string {
+			return []string{formatConfigCSV(values)}
+		},
 	}
 	return language
 }
@@ -151,12 +156,12 @@ type configSetCredentialsConfig struct {
 	Kubeconfig              string
 	Name                    string
 	AuthProvider            string
-	AuthProviderArg         [][]configPair
+	AuthProviderArg         []configPair
 	ClientCertificate       string
 	ClientKey               string
 	EmbedCerts              bool
 	ExecAPIVersion          string
-	ExecArg                 [][]string
+	ExecArg                 []string
 	ExecCommand             string
 	ExecEnv                 []configPair
 	ExecInteractiveMode     api.ExecInteractiveMode
@@ -242,8 +247,8 @@ func configSetCredentialsCommand(kubeconfig cli.Destination[rootConfig, string])
 			cb.Flags.ValueFor(authProvider).Description("Auth provider for the user entry in kubeconfig").Long("auth-provider")
 			cb.Access.ValueState(authProvider, &cb.Config.AuthProviderState)
 
-			authProviderArg := cb.Values.Sequence(&cb.Config.AuthProviderArg, configPairRecordLanguage("auth-provider-arg"))
-			cb.Flags.Sequence(authProviderArg).Description("'key=value' arguments for the auth provider").Long("auth-provider-arg")
+			authProviderArg := cb.Values.Sequence(&cb.Config.AuthProviderArg, configPairLanguage("auth-provider-arg"))
+			cb.Flags.Tokens(authProviderArg, configPairCSVLanguage("auth-provider-arg")).Description("'key=value' arguments for the auth provider").Long("auth-provider-arg")
 
 			clientCertificate := cb.Values.String(&cb.Config.ClientCertificate)
 			cb.Flags.ValueFor(clientCertificate).
@@ -266,8 +271,8 @@ func configSetCredentialsCommand(kubeconfig cli.Destination[rootConfig, string])
 			cb.Flags.ValueFor(execAPIVersion).Description("API version of the exec credential plugin for the user entry in kubeconfig").Long("exec-api-version")
 			cb.Access.ValueState(execAPIVersion, &cb.Config.ExecAPIVersionState)
 
-			execArg := cb.Values.Sequence(&cb.Config.ExecArg, configStringRecordLanguage("exec-arg"))
-			cb.Flags.Sequence(execArg).Description("New arguments for the exec credential plugin command for the user entry in kubeconfig").Long("exec-arg")
+			execArg := cb.Values.Sequence(&cb.Config.ExecArg, cli.Value.String())
+			cb.Flags.Tokens(execArg, configStringCSVLanguage("exec-arg")).Description("New arguments for the exec credential plugin command for the user entry in kubeconfig").Long("exec-arg")
 
 			execCommand := cb.Values.String(&cb.Config.ExecCommand)
 			cb.Flags.ValueFor(execCommand).Description("Command for the exec credential plugin for the user entry in kubeconfig").Long("exec-command")

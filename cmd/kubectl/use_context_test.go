@@ -14,9 +14,7 @@ func TestUseContextTreatsKnownNamesAsCompletionCandidates(t *testing.T) {
 	t.Parallel()
 
 	path := writeConfigTestKubeconfig(t, "dev", "dev")
-	app := compileConfigTestApplication(t, func(config *cli.CommandBuilder[struct{}], destinations configTestDestinations) {
-		config.Subcommands.Command(useContextCommand(destinations.Kubeconfig))
-	})
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
 
 	inspectionRequest := cli.InspectionRequest{
 		Args: []string{"--kubeconfig", path, "config", "use-context", "missing"},
@@ -37,9 +35,7 @@ func TestUseContextMutatesSelectedKubeconfig(t *testing.T) {
 	t.Parallel()
 
 	path := writeConfigTestKubeconfig(t, "old", "old", "dev")
-	app := compileConfigTestApplication(t, func(config *cli.CommandBuilder[struct{}], destinations configTestDestinations) {
-		config.Subcommands.Command(useContextCommand(destinations.Kubeconfig))
-	})
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
 
 	var stdout bytes.Buffer
 	request := cli.RunRequest{

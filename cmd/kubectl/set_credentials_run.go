@@ -115,7 +115,7 @@ func modifyConfigAuthInfo(existing api.AuthInfo, cfg *configSetCredentialsConfig
 		if modified.AuthProvider.Config == nil {
 			modified.AuthProvider.Config = make(map[string]string)
 		}
-		pairs := slices.Concat(cfg.AuthProviderArg...)
+		pairs := cfg.AuthProviderArg
 		for _, pair := range pairs {
 			if pair.Remove {
 				delete(modified.AuthProvider.Config, pair.Name)
@@ -142,8 +142,8 @@ func modifyConfigAuthInfo(existing api.AuthInfo, cfg *configSetCredentialsConfig
 		if flagProvided(cfg.ExecAPIVersionState) {
 			modified.Exec.APIVersion = cfg.ExecAPIVersion
 		}
-		if arguments := slices.Concat(cfg.ExecArg...); len(arguments) > 0 {
-			modified.Exec.Args = arguments
+		if len(cfg.ExecArg) > 0 {
+			modified.Exec.Args = slices.Clone(cfg.ExecArg)
 		}
 		if flagProvided(cfg.ExecInteractiveState) {
 			modified.Exec.InteractiveMode = cfg.ExecInteractiveMode

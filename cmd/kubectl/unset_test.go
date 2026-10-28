@@ -12,9 +12,7 @@ import (
 func TestConfigUnsetDeclaresPropertyLanguage(t *testing.T) {
 	t.Parallel()
 
-	app := compileConfigTestApplication(t, func(config *cli.CommandBuilder[struct{}], destinations configTestDestinations) {
-		config.Subcommands.Command(configUnsetCommand(destinations.Kubeconfig))
-	})
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
 	tests := []struct {
 		name  string
 		path  string
@@ -66,9 +64,7 @@ func TestConfigUnsetMutatesKubeconfigProperties(t *testing.T) {
 		t.Parallel()
 
 		path := writeConfigTestKubeconfig(t, "dev", "dev")
-		app := compileConfigTestApplication(t, func(config *cli.CommandBuilder[struct{}], destinations configTestDestinations) {
-			config.Subcommands.Command(configUnsetCommand(destinations.Kubeconfig))
-		})
+		app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
 		request := cli.RunRequest{
 			Args:   []string{"--kubeconfig", path, "config", "unset", "current-context"},
 			Stdout: &bytes.Buffer{},
@@ -89,9 +85,7 @@ func TestConfigUnsetMutatesKubeconfigProperties(t *testing.T) {
 		t.Parallel()
 
 		path := writeConfigTestKubeconfig(t, "dev.example", "dev.example")
-		app := compileConfigTestApplication(t, func(config *cli.CommandBuilder[struct{}], destinations configTestDestinations) {
-			config.Subcommands.Command(configUnsetCommand(destinations.Kubeconfig))
-		})
+		app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
 		request := cli.RunRequest{
 			Args:   []string{"--kubeconfig", path, "config", "unset", "contexts.dev.example"},
 			Stdout: &bytes.Buffer{},
@@ -112,9 +106,7 @@ func TestConfigUnsetMutatesKubeconfigProperties(t *testing.T) {
 		t.Parallel()
 
 		path := writeConfigTestKubeconfig(t, "dev", "dev")
-		app := compileConfigTestApplication(t, func(config *cli.CommandBuilder[struct{}], destinations configTestDestinations) {
-			config.Subcommands.Command(configUnsetCommand(destinations.Kubeconfig))
-		})
+		app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
 		request := cli.RunRequest{
 			Args:   []string{"--kubeconfig", path, "config", "unset", "contexts.missing.namespace"},
 			Stdout: &bytes.Buffer{},

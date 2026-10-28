@@ -12,9 +12,7 @@ import (
 func TestConfigSetClusterDeclaresCertificatePolicies(t *testing.T) {
 	t.Parallel()
 
-	app := compileConfigTestApplication(t, func(config *cli.CommandBuilder[struct{}], destinations configTestDestinations) {
-		config.Subcommands.Command(configSetClusterCommand(destinations.Kubeconfig))
-	})
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
 	tests := []struct {
 		name     string
 		args     []string
@@ -58,9 +56,7 @@ func TestConfigSetClusterDeclaresCertificatePolicies(t *testing.T) {
 func TestConfigSetClusterCertificateAuthorityUsesNativeFileCompletion(t *testing.T) {
 	t.Parallel()
 
-	app := compileConfigTestApplication(t, func(config *cli.CommandBuilder[struct{}], destinations configTestDestinations) {
-		config.Subcommands.Command(configSetClusterCommand(destinations.Kubeconfig))
-	})
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
 	request := cli.CompletionRequest{
 		Args: []string{"config", "set-cluster", "cluster", "--certificate-authority", ""},
 		Cursor: cli.CompletionCursor{
@@ -116,9 +112,7 @@ func TestConfigSetClusterPreservesBooleanFlagTriState(t *testing.T) {
 				t.Fatalf("WriteToFile() error = %v", err)
 			}
 
-			app := compileConfigTestApplication(t, func(config *cli.CommandBuilder[struct{}], destinations configTestDestinations) {
-				config.Subcommands.Command(configSetClusterCommand(destinations.Kubeconfig))
-			})
+			app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
 			request := cli.RunRequest{
 				Args:   []string{"--kubeconfig", path, "config", "set-cluster", "cluster", test.arg},
 				Stdout: &bytes.Buffer{},

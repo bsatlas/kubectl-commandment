@@ -31,7 +31,7 @@ func setConfigProperty(config *api.Config, assignment configSetAssignment, rawBy
 		if rawBytes {
 			mutation.Bytes = []byte(assignment.Text)
 		} else {
-			mutation.Bytes = []byte(assignment.DecodedBytes)
+			mutation.Bytes = bytes.Clone(assignment.DecodedBytes)
 		}
 	}
 	return updateConfigProperty(config, assignment.Property, mutation)
@@ -85,9 +85,9 @@ func updatePreferencesProperty(preferences *api.Preferences, property configProp
 	}
 
 	switch property.Field {
-	case "colors":
+	case configPropertyFieldColors:
 		return updateConfigBool(&preferences.Colors, mutation)
-	case "extensions":
+	case configPropertyFieldExtensions:
 		if !unset {
 			return fmt.Errorf("can't set a map to a value")
 		}
@@ -130,21 +130,21 @@ func updateClusterProperty(config *api.Config, property configProperty, mutation
 	}
 
 	switch property.Field {
-	case "server":
+	case configPropertyFieldServer:
 		return updateConfigString(&cluster.Server, mutation)
-	case "tls-server-name":
+	case configPropertyFieldTLSServerName:
 		return updateConfigString(&cluster.TLSServerName, mutation)
-	case "insecure-skip-tls-verify":
+	case configPropertyFieldInsecureSkipTLSVerify:
 		return updateConfigBool(&cluster.InsecureSkipTLSVerify, mutation)
-	case "certificate-authority":
+	case configPropertyFieldCertificateAuthority:
 		return updateConfigString(&cluster.CertificateAuthority, mutation)
-	case "certificate-authority-data":
+	case configPropertyFieldCertificateAuthorityData:
 		return updateConfigBytes(&cluster.CertificateAuthorityData, mutation)
-	case "proxy-url":
+	case configPropertyFieldProxyURL:
 		return updateConfigString(&cluster.ProxyURL, mutation)
-	case "disable-compression":
+	case configPropertyFieldDisableCompression:
 		return updateConfigBool(&cluster.DisableCompression, mutation)
-	case "extensions":
+	case configPropertyFieldExtensions:
 		if !unset {
 			return fmt.Errorf("can't set a map to a value")
 		}
@@ -187,51 +187,51 @@ func updateAuthInfoProperty(config *api.Config, property configProperty, mutatio
 	}
 
 	switch property.Field {
-	case "client-certificate":
+	case configPropertyFieldClientCertificate:
 		return updateConfigString(&authInfo.ClientCertificate, mutation)
-	case "client-certificate-data":
+	case configPropertyFieldClientCertificateData:
 		return updateConfigBytes(&authInfo.ClientCertificateData, mutation)
-	case "client-key":
+	case configPropertyFieldClientKey:
 		return updateConfigString(&authInfo.ClientKey, mutation)
-	case "client-key-data":
+	case configPropertyFieldClientKeyData:
 		return updateConfigBytes(&authInfo.ClientKeyData, mutation)
-	case "token":
+	case configPropertyFieldToken:
 		return updateConfigString(&authInfo.Token, mutation)
-	case "tokenFile":
+	case configPropertyFieldTokenFile:
 		return updateConfigString(&authInfo.TokenFile, mutation)
-	case "act-as":
+	case configPropertyFieldActAs:
 		return updateConfigString(&authInfo.Impersonate, mutation)
-	case "act-as-uid":
+	case configPropertyFieldActAsUID:
 		return updateConfigString(&authInfo.ImpersonateUID, mutation)
-	case "act-as-groups":
+	case configPropertyFieldActAsGroups:
 		if !unset {
 			return fmt.Errorf("unrecognized slice type. string")
 		}
 		authInfo.ImpersonateGroups = nil
 		return nil
-	case "act-as-user-extra":
+	case configPropertyFieldActAsUserExtra:
 		if !unset {
 			return fmt.Errorf("can't set a map to a value")
 		}
 		authInfo.ImpersonateUserExtra = nil
 		return nil
-	case "username":
+	case configPropertyFieldUsername:
 		return updateConfigString(&authInfo.Username, mutation)
-	case "password":
+	case configPropertyFieldPassword:
 		return updateConfigString(&authInfo.Password, mutation)
-	case "auth-provider":
+	case configPropertyFieldAuthProvider:
 		if !unset {
 			return unsupportedConfigProperty(property.Path)
 		}
 		authInfo.AuthProvider = nil
 		return nil
-	case "exec":
+	case configPropertyFieldExec:
 		if !unset {
 			return unsupportedConfigProperty(property.Path)
 		}
 		authInfo.Exec = nil
 		return nil
-	case "extensions":
+	case configPropertyFieldExtensions:
 		if !unset {
 			return fmt.Errorf("can't set a map to a value")
 		}
@@ -274,13 +274,13 @@ func updateContextProperty(config *api.Config, property configProperty, mutation
 	}
 
 	switch property.Field {
-	case "cluster":
+	case configPropertyFieldCluster:
 		return updateConfigString(&contextConfig.Cluster, mutation)
-	case "user":
+	case configPropertyFieldUser:
 		return updateConfigString(&contextConfig.AuthInfo, mutation)
-	case "namespace":
+	case configPropertyFieldNamespace:
 		return updateConfigString(&contextConfig.Namespace, mutation)
-	case "extensions":
+	case configPropertyFieldExtensions:
 		if !unset {
 			return fmt.Errorf("can't set a map to a value")
 		}
@@ -316,10 +316,6 @@ func updateConfigBytes(destination *[]byte, mutation configPropertyMutation) err
 	}
 	*destination = bytes.Clone(mutation.Bytes)
 	return nil
-}
-
-func unsupportedConfigProperty(path string) error {
-	return fmt.Errorf("unable to parse one or more field values of %v", path)
 }
 
 func invalidConfigMapKey(name string) error {

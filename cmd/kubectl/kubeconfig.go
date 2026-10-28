@@ -1,10 +1,23 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"slices"
 
+	"github.com/abstractionsinc/commandment/cli"
 	"k8s.io/client-go/tools/clientcmd"
 )
+
+func deriveKubeconfig[C any](command *cli.CommandBuilder[C], storage *string, source cli.Destination[rootConfig, string]) cli.Destination[C, string] {
+	return command.Values.Derive(storage, cli.Value.ComputedBy(func(_ context.Context, _ *C, dependencies cli.Dependencies) (string, error) {
+		value, ok := dependencies.Get(source)
+		if !ok {
+			return "", errors.New("kubeconfig dependency is unavailable")
+		}
+		return value, nil
+	}).From(source))
+}
 
 func configAccess(kubeconfig string) clientcmd.ConfigAccess {
 	options := clientcmd.NewDefaultPathOptions()

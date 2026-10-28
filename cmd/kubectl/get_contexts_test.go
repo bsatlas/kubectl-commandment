@@ -10,9 +10,7 @@ import (
 func TestConfigGetContextsOwnsItsOutputLanguage(t *testing.T) {
 	t.Parallel()
 
-	app := compileConfigTestApplication(t, func(config *cli.CommandBuilder[struct{}], destinations configTestDestinations) {
-		config.Subcommands.Command(configGetContextsCommand(destinations.Kubeconfig))
-	})
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
 
 	readyRequest := cli.InspectionRequest{
 		Args: []string{"config", "get-contexts", "missing", "also-missing", "--output=name"},
@@ -32,9 +30,7 @@ func TestConfigGetContextsDoesNotCompleteContextNames(t *testing.T) {
 	t.Parallel()
 
 	path := writeConfigTestKubeconfig(t, "dev", "dev")
-	app := compileConfigTestApplication(t, func(config *cli.CommandBuilder[struct{}], destinations configTestDestinations) {
-		config.Subcommands.Command(configGetContextsCommand(destinations.Kubeconfig))
-	})
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
 	request := cli.CompletionRequest{
 		Args: []string{"--kubeconfig", path, "config", "get-contexts", "d"},
 		Cursor: cli.CompletionCursor{

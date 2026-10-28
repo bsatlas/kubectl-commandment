@@ -10,9 +10,7 @@ import (
 func TestConfigViewDeclaresOutputLanguage(t *testing.T) {
 	t.Parallel()
 
-	app := compileConfigTestApplication(t, func(config *cli.CommandBuilder[struct{}], destinations configTestDestinations) {
-		config.Subcommands.Command(configViewCommand(destinations.Kubeconfig, destinations.Context))
-	})
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
 	tests := []struct {
 		name     string
 		args     []string
@@ -77,9 +75,7 @@ func TestConfigViewDeclaresOutputLanguage(t *testing.T) {
 func TestConfigViewMergeFalseRequiresExplicitKubeconfig(t *testing.T) {
 	t.Parallel()
 
-	app := compileConfigTestApplication(t, func(config *cli.CommandBuilder[struct{}], destinations configTestDestinations) {
-		config.Subcommands.Command(configViewCommand(destinations.Kubeconfig, destinations.Context))
-	})
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
 	rejected := cli.InspectionRequest{
 		Args: []string{"config", "view", "--merge=false"},
 	}
@@ -98,9 +94,7 @@ func TestConfigViewMergeFalseRequiresExplicitKubeconfig(t *testing.T) {
 func TestConfigViewTemplateUsesNativeFileCompletion(t *testing.T) {
 	t.Parallel()
 
-	app := compileConfigTestApplication(t, func(config *cli.CommandBuilder[struct{}], destinations configTestDestinations) {
-		config.Subcommands.Command(configViewCommand(destinations.Kubeconfig, destinations.Context))
-	})
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
 	request := cli.CompletionRequest{
 		Args: []string{"config", "view", "--template", ""},
 		Cursor: cli.CompletionCursor{

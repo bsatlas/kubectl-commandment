@@ -10,9 +10,7 @@ import (
 func TestConfigGetUsersAdmitsIgnoredArguments(t *testing.T) {
 	t.Parallel()
 
-	app := compileConfigTestApplication(t, func(config *cli.CommandBuilder[struct{}], destinations configTestDestinations) {
-		config.Subcommands.Command(configGetUsersCommand(destinations.Kubeconfig))
-	})
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
 	request := cli.InspectionRequest{
 		Args: []string{"config", "get-users", "ignored", "arguments"},
 	}

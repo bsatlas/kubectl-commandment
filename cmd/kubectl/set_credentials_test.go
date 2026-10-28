@@ -12,9 +12,7 @@ import (
 func TestConfigSetCredentialsDeclaresCredentialValueLanguages(t *testing.T) {
 	t.Parallel()
 
-	app := compileConfigTestApplication(t, func(config *cli.CommandBuilder[struct{}], destinations configTestDestinations) {
-		config.Subcommands.Command(configSetCredentialsCommand(destinations.Kubeconfig))
-	})
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
 	tests := []struct {
 		name     string
 		args     []string
@@ -102,9 +100,7 @@ func TestConfigSetCredentialsDeclaresCredentialValueLanguages(t *testing.T) {
 func TestConfigSetCredentialsCertificateFlagsUseNativeFileCompletion(t *testing.T) {
 	t.Parallel()
 
-	app := compileConfigTestApplication(t, func(config *cli.CommandBuilder[struct{}], destinations configTestDestinations) {
-		config.Subcommands.Command(configSetCredentialsCommand(destinations.Kubeconfig))
-	})
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
 	client := cli.CompletionClient{
 		Capabilities: cli.CompletionClientCapabilities{
 			Native: cli.CompletionNativeCapabilities{
@@ -133,94 +129,122 @@ func TestConfigSetCredentialsCertificateFlagsUseNativeFileCompletion(t *testing.
 func TestConfigSetCredentialsPreservesStringSliceCSV(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name string
-		args []string
-		read func(string) string
-		want string
-	}{
-		{
-			name: "auth provider quoted comma",
-			args: []string{"--auth-provider=oidc", `--auth-provider-arg="client-id=a,b"`},
-			read: func(path string) string {
-				config, err := clientcmd.LoadFromFile(path)
-				if err != nil {
-					return "load error: " + err.Error()
-				}
-				return config.AuthInfos["user"].AuthProvider.Config["client-id"]
-			},
-			want: "a,b",
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
+	command := clitest.RootCommand().Command("config").Command("set-credentials")
+
+	t.Run("auth provider quoted comma", func(t *testing.T) {
+		t.Parallel()
+
+		value := command.Flag("--auth-provider-arg").Value()
+		candidate := value.CandidateAt(0)
+		request := cli.InspectionRequest{
+			Args: []string{"config", "set-credentials", "user", `--auth-provider-arg="client-id=a,b"`},
+		}
+		clitest.Inspect(t.Context(), app, request).Require(t,
+			clitest.InspectionReady(),
+			value.Resolved(),
+			value.CandidatesExactly(candidate),
+			candidate.ElementCount(1),
+			value.ElementsExactly(candidate.ElementAt(0)),
+			candidate.ElementAt(0).Text("client-id=a,b"),
+		)
+	})
+
+	t.Run("exec argument quoted comma", func(t *testing.T) {
+		t.Parallel()
+
+		value := command.Flag("--exec-arg").Value()
+		candidate := value.CandidateAt(0)
+		request := cli.InspectionRequest{
+			Args: []string{"config", "set-credentials", "user", `--exec-arg="a,b"`},
+		}
+		clitest.Inspect(t.Context(), app, request).Require(t,
+			clitest.InspectionReady(),
+			value.Resolved(),
+			value.CandidatesExactly(candidate),
+			candidate.ElementCount(1),
+			value.ElementsExactly(candidate.ElementAt(0)),
+			candidate.ElementAt(0).Text("a,b"),
+		)
+	})
+
+	t.Run("exec argument repeated CSV", func(t *testing.T) {
+		t.Parallel()
+
+		value := command.Flag("--exec-arg").Value()
+		first := value.CandidateAt(0)
+		second := value.CandidateAt(1)
+		request := cli.InspectionRequest{
+			Args: []string{"config", "set-credentials", "user", "--exec-arg=a,b", "--exec-arg=c"},
+		}
+		clitest.Inspect(t.Context(), app, request).Require(t,
+			clitest.InspectionReady(),
+			value.Resolved(),
+			value.CandidatesExactly(first, second),
+			first.ElementCount(2),
+			second.ElementCount(1),
+			value.ElementsExactly(first.ElementAt(0), first.ElementAt(1), second.ElementAt(0)),
+			first.ElementAt(0).Text("a"),
+			first.ElementAt(1).Text("b"),
+			second.ElementAt(0).Text("c"),
+		)
+	})
+
+	t.Run("exec environment is not CSV", func(t *testing.T) {
+		t.Parallel()
+
+		value := command.Flag("--exec-env").Value()
+		candidate := value.CandidateAt(0)
+		request := cli.InspectionRequest{
+			Args: []string{"config", "set-credentials", "user", "--exec-env=TOKEN=a,b"},
+		}
+		clitest.Inspect(t.Context(), app, request).Require(t,
+			clitest.InspectionReady(),
+			value.Resolved(),
+			value.CandidatesExactly(candidate),
+			candidate.ElementCount(1),
+			value.ElementsExactly(candidate.ElementAt(0)),
+			candidate.ElementAt(0).Text("TOKEN=a,b"),
+		)
+	})
+}
+
+func TestConfigSetCredentialsPersistsResolvedCredentialCollections(t *testing.T) {
+	t.Parallel()
+
+	path := writeConfigTestKubeconfig(t, "dev", "dev")
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
+	request := cli.RunRequest{
+		Args: []string{
+			"--kubeconfig", path,
+			"config", "set-credentials", "user",
+			"--auth-provider=oidc",
+			"--auth-provider-arg=client-id=example",
+			"--exec-command=plugin",
+			"--exec-arg=arg1",
+			"--exec-env=TOKEN=value",
 		},
-		{
-			name: "exec argument quoted comma",
-			args: []string{"--exec-command=plugin", `--exec-arg="a,b"`},
-			read: func(path string) string {
-				config, err := clientcmd.LoadFromFile(path)
-				if err != nil {
-					return "load error: " + err.Error()
-				}
-				arguments := config.AuthInfos["user"].Exec.Args
-				if len(arguments) != 1 {
-					return "unexpected argument count"
-				}
-				return arguments[0]
-			},
-			want: "a,b",
-		},
-		{
-			name: "exec argument repeated CSV",
-			args: []string{"--exec-command=plugin", "--exec-arg=a,b", "--exec-arg=c"},
-			read: func(path string) string {
-				config, err := clientcmd.LoadFromFile(path)
-				if err != nil {
-					return "load error: " + err.Error()
-				}
-				arguments := config.AuthInfos["user"].Exec.Args
-				if len(arguments) != 3 {
-					return "unexpected argument count"
-				}
-				return arguments[0] + "," + arguments[1] + "," + arguments[2]
-			},
-			want: "a,b,c",
-		},
-		{
-			name: "exec environment does not use CSV",
-			args: []string{"--exec-command=plugin", "--exec-env=TOKEN=a,b"},
-			read: func(path string) string {
-				config, err := clientcmd.LoadFromFile(path)
-				if err != nil {
-					return "load error: " + err.Error()
-				}
-				environment := config.AuthInfos["user"].Exec.Env
-				if len(environment) != 1 {
-					return "unexpected environment count"
-				}
-				return environment[0].Name + "=" + environment[0].Value
-			},
-			want: "TOKEN=a,b",
-		},
+		Stdout: &bytes.Buffer{},
+	}
+	if err := app.Run(t.Context(), request); err != nil {
+		t.Fatalf("Run() error = %v", err)
 	}
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-
-			path := writeConfigTestKubeconfig(t, "dev", "dev")
-			app := compileConfigTestApplication(t, func(config *cli.CommandBuilder[struct{}], destinations configTestDestinations) {
-				config.Subcommands.Command(configSetCredentialsCommand(destinations.Kubeconfig))
-			})
-			args := []string{"--kubeconfig", path, "config", "set-credentials", "user"}
-			args = append(args, test.args...)
-			request := cli.RunRequest{
-				Args:   args,
-				Stdout: &bytes.Buffer{},
-			}
-			if err := app.Run(t.Context(), request); err != nil {
-				t.Fatalf("Run() error = %v", err)
-			}
-			if got := test.read(path); got != test.want {
-				t.Fatalf("stored value = %q, want %q", got, test.want)
-			}
-		})
+	config, err := clientcmd.LoadFromFile(path)
+	if err != nil {
+		t.Fatalf("LoadFromFile() error = %v", err)
+	}
+	authInfo := config.AuthInfos["user"]
+	if authInfo.AuthProvider == nil || authInfo.AuthProvider.Config["client-id"] != "example" {
+		t.Fatalf("auth provider = %#v", authInfo.AuthProvider)
+	}
+	if authInfo.Exec == nil {
+		t.Fatal("exec config is nil")
+	}
+	if len(authInfo.Exec.Args) != 1 || authInfo.Exec.Args[0] != "arg1" {
+		t.Fatalf("exec args = %#v", authInfo.Exec.Args)
+	}
+	if len(authInfo.Exec.Env) != 1 || authInfo.Exec.Env[0].Name != "TOKEN" || authInfo.Exec.Env[0].Value != "value" {
+		t.Fatalf("exec env = %#v", authInfo.Exec.Env)
 	}
 }

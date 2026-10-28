@@ -13,9 +13,7 @@ import (
 func TestConfigSetDeclaresPropertyAndValueLanguage(t *testing.T) {
 	t.Parallel()
 
-	app := compileConfigTestApplication(t, func(config *cli.CommandBuilder[struct{}], destinations configTestDestinations) {
-		config.Subcommands.Command(configSetCommand(destinations.Kubeconfig))
-	})
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
 	tests := []struct {
 		name  string
 		args  []string
@@ -163,9 +161,7 @@ func TestConfigSetMutatesKubeconfigProperties(t *testing.T) {
 			t.Parallel()
 
 			path := writeConfigTestKubeconfig(t, "dev", "dev")
-			app := compileConfigTestApplication(t, func(config *cli.CommandBuilder[struct{}], destinations configTestDestinations) {
-				config.Subcommands.Command(configSetCommand(destinations.Kubeconfig))
-			})
+			app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
 			args := []string{"--kubeconfig", path, "config", "set", test.property, test.value}
 			args = append(args, test.flags...)
 			request := cli.RunRequest{

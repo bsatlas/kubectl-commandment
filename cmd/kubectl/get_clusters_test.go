@@ -10,9 +10,7 @@ import (
 func TestConfigGetClustersAdmitsIgnoredArguments(t *testing.T) {
 	t.Parallel()
 
-	app := compileConfigTestApplication(t, func(config *cli.CommandBuilder[struct{}], destinations configTestDestinations) {
-		config.Subcommands.Command(configGetClustersCommand(destinations.Kubeconfig))
-	})
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
 	request := cli.InspectionRequest{
 		Args: []string{"config", "get-clusters", "ignored", "arguments"},
 	}

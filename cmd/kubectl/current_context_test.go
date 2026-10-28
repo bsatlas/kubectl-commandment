@@ -10,9 +10,7 @@ import (
 func TestCurrentContextAdmitsIgnoredArguments(t *testing.T) {
 	t.Parallel()
 
-	app := compileConfigTestApplication(t, func(config *cli.CommandBuilder[struct{}], destinations configTestDestinations) {
-		config.Subcommands.Command(currentContextCommand(destinations.Kubeconfig))
-	})
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
 	request := cli.InspectionRequest{
 		Args: []string{"config", "current-context", "ignored", "arguments"},
 	}

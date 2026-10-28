@@ -1,10 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"io"
 	"strconv"
 
@@ -25,7 +25,7 @@ type configSetAssignment struct {
 	Text         string
 	Kind         configSetValueKind
 	Bool         bool
-	DecodedBytes string
+	DecodedBytes []byte
 	Base64Valid  bool
 }
 
@@ -36,18 +36,9 @@ type configSetConfig struct {
 	Stdout      io.Writer
 }
 
-func configSetAssignmentValueLanguage() cli.ValueCodec[configSetAssignment] {
-	language := cli.ValueCodec[configSetAssignment]{
-		Name: "kubectl-config-set-assignment-value",
-		Parse: func(text string) (configSetAssignment, error) {
-			return configSetAssignment{}, fmt.Errorf("config set assignment value language must not parse token input %q", text)
-		},
-		Format: func(assignment configSetAssignment) string {
-			return assignment.Property.Path + " " + assignment.Text
-		},
-		Snapshot: cli.Value.Assign[configSetAssignment](),
-	}
-	return language
+func snapshotConfigSetAssignment(assignment configSetAssignment) configSetAssignment {
+	assignment.DecodedBytes = bytes.Clone(assignment.DecodedBytes)
+	return assignment
 }
 
 func configSetAssignmentLanguage() cli.TokenLanguage[configSetAssignment] {
@@ -102,7 +93,7 @@ func configSetAssignmentLanguage() cli.TokenLanguage[configSetAssignment] {
 				decoded, decodeErr := base64.StdEncoding.DecodeString(tokens[1])
 				assignment.Base64Valid = decodeErr == nil
 				if decodeErr == nil {
-					assignment.DecodedBytes = string(decoded)
+					assignment.DecodedBytes = decoded
 				}
 			default:
 				return configSetAssignment{}, errors.New("unsupported kubeconfig property value kind")
@@ -121,7 +112,7 @@ func configSetPropertyValueKind(property configProperty) (configSetValueKind, er
 	case configPropertyRootKind, configPropertyRootAPIVersion, configPropertyRootCurrentContext:
 		return configSetValueString, nil
 	case configPropertyRootPreferences:
-		if property.HasField && property.Field == "colors" {
+		if property.HasField && property.Field == configPropertyFieldColors {
 			return configSetValueBool, nil
 		}
 		return configSetValueUnknown, errors.New("can't set a map or structure to a value")
@@ -130,11 +121,11 @@ func configSetPropertyValueKind(property configProperty) (configSetValueKind, er
 			return configSetValueUnknown, errors.New("can't set a map to a value")
 		}
 		switch property.Field {
-		case "server", "tls-server-name", "certificate-authority", "proxy-url":
+		case configPropertyFieldServer, configPropertyFieldTLSServerName, configPropertyFieldCertificateAuthority, configPropertyFieldProxyURL:
 			return configSetValueString, nil
-		case "insecure-skip-tls-verify", "disable-compression":
+		case configPropertyFieldInsecureSkipTLSVerify, configPropertyFieldDisableCompression:
 			return configSetValueBool, nil
-		case "certificate-authority-data":
+		case configPropertyFieldCertificateAuthorityData:
 			return configSetValueBytes, nil
 		default:
 			return configSetValueUnknown, unsupportedConfigProperty(property.Path)
@@ -144,11 +135,11 @@ func configSetPropertyValueKind(property configProperty) (configSetValueKind, er
 			return configSetValueUnknown, errors.New("can't set a map to a value")
 		}
 		switch property.Field {
-		case "client-certificate", "client-key", "token", "tokenFile", "act-as", "act-as-uid", "username", "password":
+		case configPropertyFieldClientCertificate, configPropertyFieldClientKey, configPropertyFieldToken, configPropertyFieldTokenFile, configPropertyFieldActAs, configPropertyFieldActAsUID, configPropertyFieldUsername, configPropertyFieldPassword:
 			return configSetValueString, nil
-		case "client-certificate-data", "client-key-data":
+		case configPropertyFieldClientCertificateData, configPropertyFieldClientKeyData:
 			return configSetValueBytes, nil
-		case "act-as-groups":
+		case configPropertyFieldActAsGroups:
 			return configSetValueUnknown, errors.New("unrecognized slice type. string")
 		default:
 			return configSetValueUnknown, unsupportedConfigProperty(property.Path)
@@ -158,7 +149,7 @@ func configSetPropertyValueKind(property configProperty) (configSetValueKind, er
 			return configSetValueUnknown, errors.New("can't set a map to a value")
 		}
 		switch property.Field {
-		case "cluster", "user", "namespace":
+		case configPropertyFieldCluster, configPropertyFieldUser, configPropertyFieldNamespace:
 			return configSetValueString, nil
 		default:
 			return configSetValueUnknown, unsupportedConfigProperty(property.Path)
@@ -201,7 +192,7 @@ func configSetCommand(kubeconfig cli.Destination[rootConfig, string]) cli.Comman
 			cb.Access.Value(kubeconfig, &cb.Config.Kubeconfig)
 			cb.Access.Stdout(&cb.Config.Stdout)
 
-			assignment := cb.Values.Value(&cb.Config.Assignment, configSetAssignmentValueLanguage())
+			assignment := cb.Values.Destination(&cb.Config.Assignment, snapshotConfigSetAssignment)
 			cb.Arguments.Tokens(assignment, "PROPERTY", configSetAssignmentLanguage())
 
 			setRawBytes := cb.Values.Bool(&cb.Config.SetRawBytes)

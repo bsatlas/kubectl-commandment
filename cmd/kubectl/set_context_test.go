@@ -10,9 +10,7 @@ import (
 func TestConfigSetContextCurrentUsesBooleanValue(t *testing.T) {
 	t.Parallel()
 
-	app := compileConfigTestApplication(t, func(config *cli.CommandBuilder[struct{}], destinations configTestDestinations) {
-		config.Subcommands.Command(configSetContextCommand(destinations.Kubeconfig, destinations.Client))
-	})
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
 	tests := []struct {
 		name     string
 		args     []string
@@ -70,9 +68,7 @@ func TestConfigSetContextTreatsKnownNamesAsCompletionCandidates(t *testing.T) {
 	t.Parallel()
 
 	path := writeConfigTestKubeconfig(t, "dev", "dev")
-	app := compileConfigTestApplication(t, func(config *cli.CommandBuilder[struct{}], destinations configTestDestinations) {
-		config.Subcommands.Command(configSetContextCommand(destinations.Kubeconfig, destinations.Client))
-	})
+	app := clitest.Compile(t, applicationDefinition(pluginCatalog{}))
 
 	inspection := cli.InspectionRequest{
 		Args: []string{"--kubeconfig", path, "config", "set-context", "missing"},
