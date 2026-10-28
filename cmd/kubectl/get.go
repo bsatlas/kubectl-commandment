@@ -139,7 +139,7 @@ func getCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[ge
 			client := deriveClientConfig(cb, &cb.Config.Client, client)
 
 			resourceType := cb.Values.Value(&cb.Config.ResourceType, resourceTypeLanguage)
-			names := cb.Values.Sequence(&cb.Config.Names, getResourceNameLanguage)
+			names := cb.Values.Sequence(&cb.Config.Names, resourceNameLanguage)
 			qualifiedResources := cb.Values.Sequence(&cb.Config.QualifiedResources, qualifiedResourceLanguage)
 
 			cb.Arguments.Form(func(_ *cli.ArgumentFormBuilder[getConfig]) {})
@@ -380,55 +380,6 @@ func getCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[ge
 		Run: runGet,
 	}
 	return cmd
-}
-
-var resourceTypeLanguage = cli.ValueCodec[string]{
-	Name: "kubectl-resource-type",
-	Parse: func(value string) (string, error) {
-		if value == "" || strings.Contains(value, "/") {
-			return "", cli.Rejection.Message(
-				"resource-type",
-				fmt.Sprintf("expected resource type, got %q", value),
-				cli.Rejection.At(0, 0, len(value)),
-			)
-		}
-		return value, nil
-	},
-	Format:   func(value string) string { return value },
-	Snapshot: func(value string) string { return value },
-}
-
-var getResourceNameLanguage = cli.ValueCodec[string]{
-	Name: "kubectl-get-resource-name",
-	Parse: func(value string) (string, error) {
-		if strings.Contains(value, "/") {
-			return "", cli.Rejection.Message(
-				"resource-name",
-				fmt.Sprintf("expected resource name, got %q", value),
-				cli.Rejection.At(0, 0, len(value)),
-			)
-		}
-		return value, nil
-	},
-	Format:   func(value string) string { return value },
-	Snapshot: func(value string) string { return value },
-}
-
-var qualifiedResourceLanguage = cli.ValueCodec[string]{
-	Name: "kubectl-qualified-resource",
-	Parse: func(value string) (string, error) {
-		resourceType, name, found := strings.Cut(value, "/")
-		if !found || resourceType == "" || name == "" || strings.Contains(resourceType, ",") || strings.Contains(name, "/") {
-			return "", cli.Rejection.Message(
-				"qualified-resource",
-				fmt.Sprintf("expected TYPE/NAME, got %q", value),
-				cli.Rejection.At(0, 0, len(value)),
-			)
-		}
-		return value, nil
-	},
-	Format:   func(value string) string { return value },
-	Snapshot: func(value string) string { return value },
 }
 
 func outputFormatAcceptsArgument(format string) bool {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strings"
@@ -10,6 +11,20 @@ import (
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/kubectl/pkg/cmd/util"
 )
+
+var printOutputFormats = []string{
+	"json",
+	"yaml",
+	"kyaml",
+	"name",
+	"go-template",
+	"go-template-file",
+	"template",
+	"templatefile",
+	"jsonpath",
+	"jsonpath-as-json",
+	"jsonpath-file",
+}
 
 var printOutputLanguage = cli.ValueCodec[string]{
 	Name: "kubectl-print-output",
@@ -55,7 +70,68 @@ func validPrintOutputTemplate(output, template string) bool {
 	return !printOutputAcceptsArgument(output) || template != ""
 }
 
+func declarePrintFlags[C any](
+	cb *cli.CommandBuilder[C],
+	output *string,
+	outputState *cli.OptionalValue[cli.ValueState],
+	template *string,
+	allowMissingTemplateKeys *bool,
+	showManagedFields *bool,
+) {
+	allowMissing := cb.Values.Bool(allowMissingTemplateKeys)
+	cb.Values.Default(allowMissing, true)
+	cb.Flags.ValueFor(allowMissing).
+		Description("If true, ignore any errors in templates when a field or map key is missing in the template. Only applies to golang and jsonpath output formats.").
+		Long("allow-missing-template-keys").
+		ImplicitValue(true)
+
+	outputValue := cb.Values.Value(output, printOutputLanguage)
+	outputFlag := cb.Flags.ValueFor(outputValue).
+		Description("Output format. One of: (json, yaml, kyaml, name, go-template, go-template-file, template, templatefile, jsonpath, jsonpath-as-json, jsonpath-file).").
+		CompleteBy(completePrintOutputFormat[C])
+	outputFlag.Long("output")
+	outputFlag.Short('o').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
+	cb.Access.ValueState(outputValue, outputState)
+
+	cb.Flags.ValueFor(cb.Values.Bool(showManagedFields)).
+		Description("If true, keep the managedFields when printing objects in JSON or YAML format.").
+		Long("show-managed-fields").
+		ImplicitValue(true)
+
+	cb.Flags.String(template).
+		Description("Template string or path to template file to use when -o=go-template, -o=go-template-file. The template format is golang templates [http://golang.org/pkg/text/template/#pkg-overview].").
+		CompleteWith(cli.CompletionNativeFiles).
+		Long("template")
+}
+
+func completePrintOutputFormat[C any](_ context.Context, _ *C, request cli.ValueCompletionRequest) (cli.CompletionContribution, error) {
+	candidates := make([]cli.CompletionCandidate, 0, len(printOutputFormats))
+	for _, format := range printOutputFormats {
+		if strings.HasPrefix(format, request.Text) {
+			candidate := cli.CompletionCandidate{
+				Value: format,
+				Kind:  cli.CompletionCandidateValue,
+			}
+			candidates = append(candidates, candidate)
+		}
+	}
+	completion := cli.CompletionContribution{
+		Candidates: candidates,
+	}
+	return completion, nil
+}
+
 func configurePrintFlags(flags *genericclioptions.PrintFlags, output, template string, allowMissingTemplateKeys, showManagedFields bool) {
+	configurePrintFlagValues(flags, output, template, allowMissingTemplateKeys, showManagedFields)
+	flags.OutputFlagSpecified = func() bool { return output != "" }
+}
+
+func configurePrintFlagsWithOutputState(flags *genericclioptions.PrintFlags, output, template string, allowMissingTemplateKeys, showManagedFields bool, outputState cli.OptionalValue[cli.ValueState]) {
+	configurePrintFlagValues(flags, output, template, allowMissingTemplateKeys, showManagedFields)
+	flags.OutputFlagSpecified = func() bool { return explicitFlagValue(outputState) }
+}
+
+func configurePrintFlagValues(flags *genericclioptions.PrintFlags, output, template string, allowMissingTemplateKeys, showManagedFields bool) {
 	if flags.OutputFormat != nil {
 		*flags.OutputFormat = output
 	}
@@ -70,12 +146,6 @@ func configurePrintFlags(flags *genericclioptions.PrintFlags, output, template s
 	if flags.JSONYamlPrintFlags != nil {
 		flags.JSONYamlPrintFlags.ShowManagedFields = showManagedFields
 	}
-	flags.OutputFlagSpecified = func() bool { return output != "" }
-}
-
-func configurePrintFlagsWithOutputState(flags *genericclioptions.PrintFlags, output, template string, allowMissingTemplateKeys, showManagedFields bool, outputState cli.OptionalValue[cli.ValueState]) {
-	configurePrintFlags(flags, output, template, allowMissingTemplateKeys, showManagedFields)
-	flags.OutputFlagSpecified = func() bool { return explicitFlagValue(outputState) }
 }
 
 func printObject(flags *genericclioptions.PrintFlags, dryRun util.DryRunStrategy, out io.Writer) (func(runtime.Object) error, error) {

@@ -10,10 +10,8 @@ import (
 type rolloutStatusConfig struct {
 	Client    clientConfig
 	Streams   genericiooptions.IOStreams
-	Resources []string
-	Filenames []string
-	Kustomize string
-	Recursive bool
+	Resources resourceArguments
+	Filename  filenameOptions
 	Revision  int64
 	Selector  string
 	Timeout   time.Duration
@@ -39,36 +37,21 @@ func rolloutStatusCommand(client cli.Destination[rootConfig, clientConfig]) cli.
 			cb.Access.Stdout(&cb.Config.Streams.Out)
 			cb.Access.Stderr(&cb.Config.Streams.ErrOut)
 
-			resources := cb.Values.Sequence(&cb.Config.Resources, cli.Value.String())
-			cb.Arguments.Form(func(form *cli.ArgumentFormBuilder[rolloutStatusConfig]) {
-				form.Sequence(resources, "RESOURCE", cli.Count.ZeroOrMore()).
-					CompleteBy(resourceArgumentCompleter(
-						func(cfg *rolloutStatusConfig) (clientConfig, []string) { return cfg.Client, cfg.Resources },
-						[]string{"deployment", "daemonset", "statefulset"},
-						resourceArgumentSingle,
-					)).
-					From(client)
-			})
-
-			filenames := cb.Values.Sequence(&cb.Config.Filenames, cli.Value.String())
-			filenameFlag := cb.Flags.Sequence(filenames).DelimitedBy(",").Description("Filename, directory, or URL to files identifying the resource to get from a server.")
-			filenameFlag.Long("filename")
-			filenameFlag.Short('f')
-
-			kustomizeFlag := cb.Flags.String(&cb.Config.Kustomize).Description("Process the kustomization directory. This flag can't be used together with -f or -R.")
-			kustomizeFlag.Long("kustomize")
-			kustomizeFlag.Short('k')
-
-			recursiveFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Recursive)).Description("Process the directory used in -f, --filename recursively. Useful when you want to manage related manifests organized within the same directory.")
-			recursiveFlag.Long("recursive").ImplicitValue(true)
-			recursiveFlag.Short('R').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
+			resources := declareResourceArguments(
+				cb,
+				&cb.Config.Resources,
+				client,
+				func(cfg *rolloutStatusConfig) (clientConfig, resourceArguments) { return cfg.Client, cfg.Resources },
+				[]string{"deployment", "daemonset", "statefulset"},
+			)
+			files := declareFilenameOptions(cb, &cb.Config.Filename)
 
 			revisionFlag := cb.Flags.Value(&cb.Config.Revision, int64Language()).Description("Pin to a specific revision for showing its status. Defaults to 0 (last revision).")
 			revisionFlag.Long("revision")
 
 			selectorFlag := cb.Flags.String(&cb.Config.Selector).Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
 			selectorFlag.Long("selector")
-			selectorFlag.Short('l')
+			selectorFlag.Short('l').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
 			cb.Flags.Value(&cb.Config.Timeout, durationLanguage()).Description("The length of time to wait before ending watch, zero means never. Any other values should contain a corresponding time unit (e.g. 1s, 2m, 3h).").Long("timeout")
 
@@ -78,7 +61,7 @@ func rolloutStatusCommand(client cli.Destination[rootConfig, clientConfig]) cli.
 			watchFlag.Long("watch").ImplicitValue(true)
 			watchFlag.Short('w').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
 
-			cb.Rule.AtLeastOne(resources, filenames).And(kustomizeFlag.Destination())
+			requireResourceOrFilenameSource(cb, resources, files)
 			cb.Rule.AtLeast(revisionFlag.Destination(), int64(0))
 		},
 		Run: runRolloutStatus,

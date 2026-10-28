@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"slices"
 
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/errors"
@@ -18,12 +17,12 @@ func runRolloutResume(_ context.Context, cfg *rolloutResumeConfig) error {
 	options := rollout.NewRolloutResumeOptions(cfg.Streams)
 	options.LabelSelector = cfg.Selector
 	options.FilenameOptions = resource.FilenameOptions{
-		Filenames: slices.Clone(cfg.Filenames),
-		Kustomize: cfg.Kustomize,
-		Recursive: cfg.Recursive,
+		Filenames: cfg.Filename.Filenames(),
+		Kustomize: cfg.Filename.Kustomize,
+		Recursive: cfg.Filename.Recursive,
 	}
-	configurePrintFlags(options.PrintFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
-	if err := options.Complete(factory, nil, cfg.Resources); err != nil {
+	configurePrintFlagsWithOutputState(options.PrintFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields, cfg.OutputState)
+	if err := options.Complete(factory, nil, cfg.Resources.Args()); err != nil {
 		return err
 	}
 

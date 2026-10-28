@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"slices"
 
 	"k8s.io/cli-runtime/pkg/printers"
 	"k8s.io/cli-runtime/pkg/resource"
@@ -12,22 +11,18 @@ import (
 
 func runRolloutUndo(_ context.Context, cfg *rolloutUndoConfig) error {
 	factory := cfg.Client.factory()
-	strategy, err := dryRunStrategy(cfg.DryRun)
-	if err != nil {
-		return err
-	}
 	options := rollout.NewRolloutUndoOptions(cfg.Streams)
-	options.Resources = slices.Clone(cfg.Resources)
+	options.Resources = cfg.Resources.Args()
 	options.ToRevision = cfg.ToRevision
-	options.DryRunStrategy = strategy
+	options.DryRunStrategy = cfg.DryRun
 	options.LabelSelector = cfg.Selector
 	options.FilenameOptions = resource.FilenameOptions{
-		Filenames: slices.Clone(cfg.Filenames),
-		Kustomize: cfg.Kustomize,
-		Recursive: cfg.Recursive,
+		Filenames: cfg.Filename.Filenames(),
+		Kustomize: cfg.Filename.Kustomize,
+		Recursive: cfg.Filename.Recursive,
 	}
 	options.CmdBaseName = "kubectl"
-	configurePrintFlags(options.PrintFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
+	configurePrintFlagsWithOutputState(options.PrintFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields, cfg.OutputState)
 	if options.Namespace, options.EnforceNamespace, err = factory.ToRawKubeConfigLoader().Namespace(); err != nil {
 		return err
 	}
