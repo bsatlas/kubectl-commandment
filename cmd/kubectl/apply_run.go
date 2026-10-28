@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -18,10 +19,7 @@ import (
 
 func runApply(_ context.Context, cfg *applyConfig) error {
 	factory := cfg.Client.factory()
-	strategy, err := dryRunStrategy(cfg.DryRun)
-	if err != nil {
-		return err
-	}
+	strategy := cfg.DryRun
 
 	dynamicClient, err := factory.DynamicClient()
 	if err != nil {
@@ -43,7 +41,6 @@ func runApply(_ context.Context, cfg *applyConfig) error {
 	if err := deleteOptions.FilenameOptions.RequireFilenameOrKustomize(); err != nil {
 		return err
 	}
-
 	printFlags := genericclioptions.NewPrintFlags("created").WithTypeSetter(scheme.Scheme)
 	configurePrintFlags(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
 	toPrinter := func(operation string) (printers.ResourcePrinter, error) {
@@ -64,7 +61,11 @@ func runApply(_ context.Context, cfg *applyConfig) error {
 		return err
 	}
 
-	validation, err := factory.Validator(cfg.Validate)
+	validate, err := validationDirective(cfg.Validate)
+	if err != nil {
+		return err
+	}
+	validation, err := factory.Validator(validate)
 	if err != nil {
 		return err
 	}
@@ -85,17 +86,35 @@ func runApply(_ context.Context, cfg *applyConfig) error {
 		klog.V(4).Infof("warning: OpenAPI V3 Patch is enabled but is unable to be loaded. Will fall back to OpenAPI V2")
 	}
 
+	var applySet *apply.ApplySet
+	if cfg.ApplySet != "" {
+		parent, err := apply.ParseApplySetParentRef(cfg.ApplySet, mapper)
+		if err != nil {
+			return fmt.Errorf("invalid parent reference %q: %w", cfg.ApplySet, err)
+		}
+		if enforceNamespace && parent.IsNamespaced() {
+			parent.Namespace = namespace
+		}
+		tooling := apply.ApplySetTooling{
+			Name:    "kubectl",
+			Version: apply.ApplySetToolVersion,
+		}
+		restClient, err := factory.UnstructuredClientForMapping(parent.RESTMapping)
+		if err != nil {
+			return fmt.Errorf("failed to initialize RESTClient for ApplySet: %w", err)
+		}
+		if restClient == nil {
+			return fmt.Errorf("could not build RESTClient for ApplySet")
+		}
+		applySet = apply.NewApplySet(parent, tooling, mapper, restClient)
+	}
+
 	pruneResources := []prune.Resource(nil)
 	if cfg.Prune {
 		pruneResources, err = prune.ParseResources(mapper, cfg.PruneAllowlist)
 		if err != nil {
 			return err
 		}
-	}
-
-	fieldManager := cfg.FieldManager
-	if cfg.ServerSide && !explicitFlagValue(cfg.FieldManagerState) {
-		fieldManager = "kubectl"
 	}
 
 	options := &apply.ApplyOptions{
@@ -105,7 +124,7 @@ func runApply(_ context.Context, cfg *applyConfig) error {
 		DeleteOptions:       deleteOptions,
 		ServerSideApply:     cfg.ServerSide,
 		ForceConflicts:      cfg.ForceConflicts,
-		FieldManager:        fieldManager,
+		FieldManager:        cfg.FieldManager,
 		Selector:            cfg.Selector,
 		DryRunStrategy:      strategy,
 		Prune:               cfg.Prune,
@@ -114,7 +133,7 @@ func runApply(_ context.Context, cfg *applyConfig) error {
 		Overwrite:           cfg.Overwrite,
 		OpenAPIPatch:        cfg.OpenapiPatch,
 		Subresource:         cfg.Subresource,
-		ValidationDirective: cfg.Validate,
+		ValidationDirective: validate,
 		Validator:           validation,
 		Builder:             factory.NewBuilder(),
 		Mapper:              mapper,
@@ -126,10 +145,8 @@ func runApply(_ context.Context, cfg *applyConfig) error {
 		IOStreams:           cfg.Streams,
 		VisitedUids:         sets.New[types.UID](),
 		VisitedNamespaces:   sets.New[string](),
+		ApplySet:            applySet,
 	}
 	options.PostProcessorFn = options.PrintAndPrunePostProcessor()
-	if err := options.Validate(); err != nil {
-		return err
-	}
 	return options.Run()
 }

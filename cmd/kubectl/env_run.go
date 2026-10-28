@@ -19,8 +19,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 
 	"k8s.io/api/core/v1"
@@ -31,7 +32,6 @@ import (
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/cli-runtime/pkg/printers"
 	"k8s.io/cli-runtime/pkg/resource"
-	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/kubectl/pkg/cmd/set"
 	"k8s.io/kubectl/pkg/cmd/set/env"
 	"k8s.io/kubectl/pkg/cmd/util"
@@ -41,34 +41,57 @@ import (
 
 var invalidEnvName = regexp.MustCompile("[^a-zA-Z0-9_]")
 
+func resolveEnvChanges(in io.Reader, groups ...[]envChange) ([]v1.EnvVar, []string, bool, error) {
+	var environment []v1.EnvVar
+	var remove []string
+	usedStdin := false
+	for _, group := range groups {
+		for _, change := range group {
+			switch change.kind {
+			case envChangeSet:
+				variable := v1.EnvVar{
+					Name:  change.name,
+					Value: change.value,
+				}
+				environment = append(environment, variable)
+			case envChangeRemove:
+				remove = append(remove, change.name)
+			case envChangeStdin:
+				fromStdin, _, used, err := env.ParseEnv([]string{"-"}, in)
+				if err != nil {
+					return nil, nil, usedStdin, err
+				}
+				environment = append(environment, fromStdin...)
+				usedStdin = usedStdin || used
+			}
+		}
+	}
+	if envSetAndRemoved(environment, remove) {
+		return nil, nil, usedStdin, fmt.Errorf("can not both modify and remove the same environment variable in the same command")
+	}
+	return environment, remove, usedStdin, nil
+}
+
+func envSetAndRemoved(environment []v1.EnvVar, remove []string) bool {
+	set := make(map[string]struct{}, len(environment))
+	for _, variable := range environment {
+		set[variable.Name] = struct{}{}
+	}
+	for _, name := range remove {
+		if _, ok := set[name]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 func runSetEnv(_ context.Context, cfg *setEnvConfig) error {
-	if cfg.All && cfg.Selector != "" {
-		return fmt.Errorf("cannot set --all and --selector at the same time")
-	}
-	resources, envArgs, ok := env.SplitEnvironmentFromResources(cfg.Arguments)
-	if !ok {
-		return fmt.Errorf("all resources must be specified before environment changes: %s", strings.Join(cfg.Arguments, " "))
-	}
-	strategy, err := dryRunStrategy(cfg.DryRun)
-	if err != nil {
-		return err
-	}
-	if cfg.Local && strategy == util.DryRunServer {
-		return fmt.Errorf("cannot specify --local and --dry-run=server - did you mean --dry-run=client?")
-	}
-	if len(cfg.Filename) == 0 && cfg.Kustomize == "" && len(resources) == 0 {
-		return fmt.Errorf("one or more resources must be specified as <resource> <name> or <resource>/<name>")
-	}
-	if cfg.List && cfg.Output != "" {
-		return fmt.Errorf("--list and --output may not be specified together")
-	}
-	if len(cfg.Keys) > 0 && cfg.From == "" {
-		return fmt.Errorf("when specifying --keys, a configmap or secret must be provided with --from")
-	}
+	resources, positionalEnvironment := splitEnvArguments(cfg.Arguments)
+	strategy := cfg.DryRun
 
 	factory := cfg.Client.factory()
 	namespace, enforceNamespace, err := factory.ToRawKubeConfigLoader().Namespace()
-	if err != nil && !(cfg.Local && clientcmd.IsEmptyConfig(err)) {
+	if err != nil {
 		return err
 	}
 	clientset, err := factory.KubernetesClientSet()
@@ -76,7 +99,7 @@ func runSetEnv(_ context.Context, cfg *setEnvConfig) error {
 		return err
 	}
 
-	environment, remove, envFromStdin, err := env.ParseEnv(append(append([]string(nil), cfg.Env...), envArgs...), cfg.Streams.In)
+	environment, remove, envFromStdin, err := resolveEnvChanges(cfg.Streams.In, cfg.Env, positionalEnvironment)
 	if err != nil {
 		return err
 	}
@@ -161,8 +184,6 @@ func runSetEnv(_ context.Context, cfg *setEnvConfig) error {
 		Flatten()
 	if !cfg.Local {
 		builder = builder.LabelSelectorParam(cfg.Selector).ResourceTypeOrNameArgs(cfg.All, resources...).Latest()
-	} else if len(resources) > 0 {
-		return resource.LocalResourceError
 	}
 	if envFromStdin {
 		builder = builder.StdinInUse()
@@ -225,10 +246,10 @@ func runSetEnv(_ context.Context, cfg *setEnvConfig) error {
 				}
 				messages := make([]string, 0, len(resolveErrors))
 				for message, variables := range resolveErrors {
-					sort.Strings(variables)
+					slices.Sort(variables)
 					messages = append(messages, fmt.Sprintf("error retrieving reference for %s: %v", strings.Join(variables, ", "), message))
 				}
-				sort.Strings(messages)
+				slices.Sort(messages)
 				for _, message := range messages {
 					fmt.Fprintln(cfg.Streams.ErrOut, message)
 				}
@@ -271,7 +292,7 @@ func runSetEnv(_ context.Context, cfg *setEnvConfig) error {
 			allErrs = append(allErrs, fmt.Errorf("failed to patch env update to pod template: %v", err))
 			continue
 		}
-		if len(environment) == 0 && len(envArgs) == 0 {
+		if len(environment) == 0 && len(positionalEnvironment) == 0 {
 			return fmt.Errorf("at least one environment variable must be provided")
 		}
 		if err := printObj(actual); err != nil {

@@ -1,9 +1,10 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
-	"strings"
+	"slices"
 
 	"k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -19,19 +20,7 @@ import (
 )
 
 func runSetSubject(_ context.Context, cfg *setSubjectConfig) error {
-	strategy, err := dryRunStrategy(cfg.DryRun)
-	if err != nil {
-		return err
-	}
-	if cfg.Local && strategy == util.DryRunServer {
-		return fmt.Errorf("cannot specify --local and --dry-run=server - did you mean --dry-run=client?")
-	}
-	if cfg.All && cfg.Selector != "" {
-		return fmt.Errorf("cannot set --all and --selector at the same time")
-	}
-	if len(cfg.User) == 0 && len(cfg.Group) == 0 && len(cfg.ServiceAccounts) == 0 {
-		return fmt.Errorf("you must specify at least one value of user, group or serviceaccount")
-	}
+	strategy := cfg.DryRun
 
 	factory := cfg.Client.factory()
 	namespace, enforceNamespace, err := factory.ToRawKubeConfigLoader().Namespace()
@@ -50,12 +39,8 @@ func runSetSubject(_ context.Context, cfg *setSubjectConfig) error {
 		NamespaceParam(namespace).DefaultNamespace().
 		FilenameParam(enforceNamespace, &filename).
 		Flatten()
-	if cfg.Local {
-		if len(cfg.Arguments) > 0 {
-			return resource.LocalResourceError
-		}
-	} else {
-		builder = builder.LabelSelectorParam(cfg.Selector).ResourceTypeOrNameArgs(cfg.All, cfg.Arguments...).Latest()
+	if !cfg.Local {
+		builder = builder.LabelSelectorParam(cfg.Selector).ResourceTypeOrNameArgs(cfg.All, cfg.Resources...).Latest()
 	}
 	infos, err := builder.Do().Infos()
 	if err != nil {
@@ -63,12 +48,8 @@ func runSetSubject(_ context.Context, cfg *setSubjectConfig) error {
 	}
 
 	for _, serviceAccount := range cfg.ServiceAccounts {
-		parts := strings.Split(serviceAccount, ":")
-		if len(parts) != 2 || parts[1] == "" {
-			return fmt.Errorf("serviceaccount must be <namespace>:<name>")
-		}
 		for _, info := range infos {
-			if _, ok := info.Object.(*v1.ClusterRoleBinding); ok && parts[0] == "" {
+			if _, ok := info.Object.(*v1.ClusterRoleBinding); ok && serviceAccount.namespace == "" {
 				return fmt.Errorf("serviceaccount must be <namespace>:<name>, namespace must be specified")
 			}
 		}
@@ -83,30 +64,37 @@ func runSetSubject(_ context.Context, cfg *setSubjectConfig) error {
 
 	subjects := make([]v1.Subject, 0, len(cfg.User)+len(cfg.Group)+len(cfg.ServiceAccounts))
 	for _, user := range sets.List(sets.New[string](cfg.User...)) {
-		subjects = append(subjects, v1.Subject{
+		subject := v1.Subject{
 			Kind:     v1.UserKind,
 			APIGroup: v1.GroupName,
 			Name:     user,
-		})
+		}
+		subjects = append(subjects, subject)
 	}
 	for _, group := range sets.List(sets.New[string](cfg.Group...)) {
-		subjects = append(subjects, v1.Subject{
+		subject := v1.Subject{
 			Kind:     v1.GroupKind,
 			APIGroup: v1.GroupName,
 			Name:     group,
-		})
+		}
+		subjects = append(subjects, subject)
 	}
-	for _, serviceAccount := range sets.List(sets.New[string](cfg.ServiceAccounts...)) {
-		parts := strings.Split(serviceAccount, ":")
-		subjectNamespace := parts[0]
+	serviceAccounts := slices.Clone(cfg.ServiceAccounts)
+	slices.SortFunc(serviceAccounts, func(a, b subjectServiceAccount) int {
+		return cmp.Compare(a.namespace+":"+a.name, b.namespace+":"+b.name)
+	})
+	serviceAccounts = slices.Compact(serviceAccounts)
+	for _, serviceAccount := range serviceAccounts {
+		subjectNamespace := serviceAccount.namespace
 		if subjectNamespace == "" {
 			subjectNamespace = namespace
 		}
-		subjects = append(subjects, v1.Subject{
+		subject := v1.Subject{
 			Kind:      v1.ServiceAccountKind,
 			Namespace: subjectNamespace,
-			Name:      parts[1],
-		})
+			Name:      serviceAccount.name,
+		}
+		subjects = append(subjects, subject)
 	}
 
 	patches := set.CalculatePatches(infos, scheme.DefaultJSONEncoder(), func(object runtime.Object) ([]byte, error) {

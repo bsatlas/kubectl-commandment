@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -14,7 +13,6 @@ import (
 	"k8s.io/kubectl/pkg/cmd/util"
 	"k8s.io/kubectl/pkg/cmd/util/editor"
 	"k8s.io/kubectl/pkg/scheme"
-	"sigs.k8s.io/yaml"
 )
 
 type lastAppliedPatch struct {
@@ -24,10 +22,7 @@ type lastAppliedPatch struct {
 }
 
 func runApplySetLastApplied(_ context.Context, cfg *applySetLastAppliedConfig) error {
-	strategy, err := dryRunStrategy(cfg.DryRun)
-	if err != nil {
-		return err
-	}
+	strategy := cfg.DryRun
 	factory := cfg.Client.factory()
 	namespace, enforceNamespace, err := factory.ToRawKubeConfigLoader().Namespace()
 	if err != nil {
@@ -72,11 +67,12 @@ func runApplySetLastApplied(_ context.Context, cfg *applySetLastAppliedConfig) e
 			fmt.Fprintf(cfg.Streams.Out, "set-last-applied %s: no changes required.\n", info.Name)
 			return nil
 		}
-		patches = append(patches, lastAppliedPatch{
+		pending := lastAppliedPatch{
 			info:      info,
 			patch:     patch,
 			patchType: patchType,
-		})
+		}
+		patches = append(patches, pending)
 		return nil
 	}); err != nil {
 		return err
@@ -107,63 +103,4 @@ func runApplySetLastApplied(_ context.Context, cfg *applySetLastAppliedConfig) e
 		}
 	}
 	return nil
-}
-
-func runApplyViewLastApplied(_ context.Context, cfg *applyViewLastAppliedConfig) error {
-	if cfg.Output != "yaml" && cfg.Output != "json" {
-		return fmt.Errorf("unexpected -o output mode: %s, the flag 'output' must be one of yaml|json", cfg.Output)
-	}
-	factory := cfg.Client.factory()
-	namespace, enforceNamespace, err := factory.ToRawKubeConfigLoader().Namespace()
-	if err != nil {
-		return err
-	}
-	filenameOptions := resource.FilenameOptions{
-		Filenames: append([]string(nil), cfg.Filename...),
-		Kustomize: cfg.Kustomize,
-		Recursive: cfg.Recursive,
-	}
-	result := factory.NewBuilder().
-		Unstructured().
-		NamespaceParam(namespace).DefaultNamespace().
-		FilenameParam(enforceNamespace, &filenameOptions).
-		ResourceTypeOrNameArgs(enforceNamespace, cfg.Arguments...).
-		SelectAllParam(cfg.All).
-		LabelSelectorParam(cfg.Selector).
-		Latest().
-		Flatten().
-		Do()
-	if err := result.Err(); err != nil {
-		return err
-	}
-	return result.Visit(func(info *resource.Info, err error) error {
-		if err != nil {
-			return err
-		}
-		configuration, err := originalConfiguration(info.Object)
-		if err != nil {
-			return err
-		}
-		if configuration == nil {
-			return fmt.Errorf("no last-applied-configuration annotation found on resource: %s", info.Name)
-		}
-		switch cfg.Output {
-		case "json":
-			buffer := &bytes.Buffer{}
-			if err := json.Indent(buffer, configuration, "", "  "); err != nil {
-				return err
-			}
-			_, err = fmt.Fprint(cfg.Streams.Out, buffer.String())
-			return err
-		case "yaml":
-			output, err := yaml.JSONToYAML(configuration)
-			if err != nil {
-				return err
-			}
-			_, err = cfg.Streams.Out.Write(output)
-			return err
-		default:
-			return nil
-		}
-	})
 }

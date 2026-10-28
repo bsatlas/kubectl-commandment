@@ -1,27 +1,36 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"maps"
+	"slices"
+	"strings"
+
 	"github.com/abstractionsinc/commandment/cli"
+	"k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/cli-runtime/pkg/genericiooptions"
+	"k8s.io/kubectl/pkg/cmd/util"
 )
 
 type setResourcesConfig struct {
 	Client                   clientConfig
 	Streams                  genericiooptions.IOStreams
-	Arguments                []string
+	Resources                []string
 	All                      bool
 	AllowMissingTemplateKeys bool
 	Containers               string
-	DryRun                   string
+	DryRun                   util.DryRunStrategy
 	FieldManager             string
 	Filename                 []string
 	Kustomize                string
-	Limits                   string
+	Limits                   v1.ResourceList
 	Local                    bool
 	Output                   string
 	Record                   bool
 	Recursive                bool
-	Requests                 string
+	Requests                 v1.ResourceList
 	Selector                 string
 	ShowManagedFields        bool
 	Template                 string
@@ -57,12 +66,13 @@ func setResourcesCommand(client cli.Destination[rootConfig, clientConfig]) cli.C
 			cb.Access.Stdin(&cb.Config.Streams.In)
 			cb.Access.Stdout(&cb.Config.Streams.Out)
 			cb.Access.Stderr(&cb.Config.Streams.ErrOut)
-			arguments := cb.Values.Sequence(&cb.Config.Arguments, cli.Value.String())
+			resources := cb.Values.Sequence(&cb.Config.Resources, cli.Value.String())
 			cb.Arguments.Form(func(form *cli.ArgumentFormBuilder[setResourcesConfig]) {
-				form.Sequence(arguments, "ARG", cli.Count.ZeroOrMore())
+				form.Sequence(resources, "RESOURCE", cli.Count.ZeroOrMore())
 			})
 
-			allFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.All))
+			all := cb.Values.Bool(&cb.Config.All)
+			allFlag := cb.Flags.ValueFor(all)
 			allFlag = allFlag.Description("Select all resources, in the namespace of the specified resource types")
 			allFlag.Long("all").ImplicitValue(true)
 
@@ -77,11 +87,12 @@ func setResourcesCommand(client cli.Destination[rootConfig, clientConfig]) cli.C
 			containersFlag.Long("containers")
 			containersFlag.Short('c')
 
-			dryRunFlag := cb.Flags.String(&cb.Config.DryRun)
+			dryRun := cb.Values.Value(&cb.Config.DryRun, dryRunValueLanguage)
+			dryRunFlag := cb.Flags.ValueFor(dryRun)
 			dryRunFlag = dryRunFlag.Description("Must be \"none\", \"server\", or \"client\". If client strategy, only print the object that would be sent, without sending it. If server strategy, submit server-side request without persisting the resource.")
-			cb.Values.Default(dryRunFlag, "none")
+			cb.Values.Default(dryRunFlag, util.DryRunNone)
 			dryRunFlagLong := dryRunFlag.Long("dry-run")
-			dryRunFlagLong.ImplicitValue("unchanged")
+			dryRunFlagLong.ImplicitValue(util.DryRunClient)
 
 			fieldManagerFlag := cb.Flags.String(&cb.Config.FieldManager)
 			fieldManagerFlag = fieldManagerFlag.Description("Name of the manager used to track field ownership.")
@@ -95,16 +106,19 @@ func setResourcesCommand(client cli.Destination[rootConfig, clientConfig]) cli.C
 			filenameFlag.Long("filename")
 			filenameFlag.Short('f')
 
-			kustomizeFlag := cb.Flags.String(&cb.Config.Kustomize)
+			kustomize := cb.Values.String(&cb.Config.Kustomize)
+			kustomizeFlag := cb.Flags.ValueFor(kustomize)
 			kustomizeFlag = kustomizeFlag.Description("Process the kustomization directory. This flag can't be used together with -f or -R.")
 			kustomizeFlag.Long("kustomize")
 			kustomizeFlag.Short('k')
 
-			limitsFlag := cb.Flags.String(&cb.Config.Limits)
+			limits := cb.Values.Value(&cb.Config.Limits, resourceListLanguage)
+			limitsFlag := cb.Flags.ValueFor(limits)
 			limitsFlag = limitsFlag.Description("The resource requirement requests for this container.  For example, 'cpu=100m,memory=256Mi'.  Note that server side components may assign requests depending on the server configuration, such as limit ranges.")
 			limitsFlag.Long("limits")
 
-			localFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Local))
+			local := cb.Values.Bool(&cb.Config.Local)
+			localFlag := cb.Flags.ValueFor(local)
 			localFlag = localFlag.Description("If true, set resources will NOT contact api-server but run locally.")
 			localFlag.Long("local").ImplicitValue(true)
 
@@ -118,16 +132,19 @@ func setResourcesCommand(client cli.Destination[rootConfig, clientConfig]) cli.C
 			recordFlag = recordFlag.Hidden().Release(preexistingDeprecation("--record will be removed in the future"))
 			recordFlag.Long("record").ImplicitValue(true)
 
-			recursiveFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Recursive))
+			recursive := cb.Values.Bool(&cb.Config.Recursive)
+			recursiveFlag := cb.Flags.ValueFor(recursive)
 			recursiveFlag = recursiveFlag.Description("Process the directory used in -f, --filename recursively. Useful when you want to manage related manifests organized within the same directory.")
 			recursiveFlag.Long("recursive").ImplicitValue(true)
 			recursiveFlag.Short('R').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
 
-			requestsFlag := cb.Flags.String(&cb.Config.Requests)
+			requests := cb.Values.Value(&cb.Config.Requests, resourceListLanguage)
+			requestsFlag := cb.Flags.ValueFor(requests)
 			requestsFlag = requestsFlag.Description("The resource requirement requests for this container.  For example, 'cpu=100m,memory=256Mi'.  Note that server side components may assign requests depending on the server configuration, such as limit ranges.")
 			requestsFlag.Long("requests")
 
-			selectorFlag := cb.Flags.String(&cb.Config.Selector)
+			selector := cb.Values.String(&cb.Config.Selector)
+			selectorFlag := cb.Flags.ValueFor(selector)
 			selectorFlag = selectorFlag.Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
 			selectorFlag.Long("selector")
 			selectorFlag.Short('l')
@@ -139,8 +156,73 @@ func setResourcesCommand(client cli.Destination[rootConfig, clientConfig]) cli.C
 			templateFlag := cb.Flags.String(&cb.Config.Template)
 			templateFlag = templateFlag.Description("Template string or path to template file to use when -o=go-template, -o=go-template-file. The template format is golang templates [http://golang.org/pkg/text/template/#pkg-overview].")
 			templateFlag.Long("template")
+
+			cb.Rule.When(cb.When.Equal(all, true)).Equal(selector, "")
+			cb.Rule.AtMostOne(filenameValue, kustomize)
+			cb.Rule.When(cb.When.Equal(recursive, true)).Forbid(kustomize)
+			cb.Rule.When(cb.When.Equal(local, true)).Forbid(resources)
+			cb.Rule.AtLeastOne(resources, filenameValue).And(kustomize)
+			cb.Rule.Check("kubectl-set-resources-update", func(_ context.Context, cfg *setResourcesConfig, _ cli.Dependencies) (bool, error) {
+				return len(cfg.Limits) > 0 || len(cfg.Requests) > 0, nil
+			}).
+				DependsOn(limits.OptionalDependency()).
+				DependsOn(requests.OptionalDependency())
+			cb.Rule.Check("kubectl-set-resources-local-dry-run", func(_ context.Context, cfg *setResourcesConfig, _ cli.Dependencies) (bool, error) {
+				return !cfg.Local || cfg.DryRun != util.DryRunServer, nil
+			}).
+				DependsOn(local.OptionalDependency()).
+				DependsOn(dryRun.OptionalDependency())
 		},
 		Run: runSetResources,
 	}
 	return cmd
+}
+
+var resourceListLanguage = cli.ValueCodec[v1.ResourceList]{
+	Name: "kubectl-resource-list",
+	Parse: func(value string) (v1.ResourceList, error) {
+		if value == "" {
+			return nil, nil
+		}
+		result := v1.ResourceList{}
+		for statement := range strings.SplitSeq(value, ",") {
+			name, quantityText, found := strings.Cut(statement, "=")
+			if !found || strings.Contains(quantityText, "=") {
+				return nil, cli.Rejection.Message(
+					"resource-list",
+					fmt.Sprintf("invalid argument syntax %v, expected <resource>=<value>", statement),
+					cli.Rejection.At(0, 0, len(value)),
+				)
+			}
+			quantity, err := resource.ParseQuantity(quantityText)
+			if err != nil {
+				return nil, cli.Rejection.Message(
+					"resource-list",
+					err.Error(),
+					cli.Rejection.At(0, 0, len(value)),
+				)
+			}
+			result[v1.ResourceName(name)] = quantity
+		}
+		return result, nil
+	},
+	Format: func(value v1.ResourceList) string {
+		keys := slices.Sorted(maps.Keys(value))
+		parts := make([]string, 0, len(keys))
+		for _, name := range keys {
+			quantity := value[name]
+			parts = append(parts, string(name)+"="+quantity.String())
+		}
+		return strings.Join(parts, ",")
+	},
+	Snapshot: func(value v1.ResourceList) v1.ResourceList {
+		if value == nil {
+			return nil
+		}
+		clone := make(v1.ResourceList, len(value))
+		for name, quantity := range value {
+			clone[name] = quantity.DeepCopy()
+		}
+		return clone
+	},
 }

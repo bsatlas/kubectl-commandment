@@ -1,17 +1,22 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"strings"
+
 	"github.com/abstractionsinc/commandment/cli"
 	"k8s.io/cli-runtime/pkg/genericiooptions"
+	"k8s.io/kubectl/pkg/cmd/util"
 )
 
 type setImageConfig struct {
 	Client                   clientConfig
 	Streams                  genericiooptions.IOStreams
-	Arguments                []string
+	Arguments                []imageArgument
 	All                      bool
 	AllowMissingTemplateKeys bool
-	DryRun                   string
+	DryRun                   util.DryRunStrategy
 	FieldManager             string
 	Filename                 []string
 	Kustomize                string
@@ -22,6 +27,106 @@ type setImageConfig struct {
 	Selector                 string
 	ShowManagedFields        bool
 	Template                 string
+}
+
+type imageArgumentKind uint8
+
+const (
+	imageArgumentResource imageArgumentKind = iota
+	imageArgumentUpdate
+)
+
+type imageArgument struct {
+	kind     imageArgumentKind
+	resource string
+	update   imageUpdate
+}
+
+type imageUpdate struct {
+	container string
+	image     string
+}
+
+func parseImageUpdate(value string) (imageUpdate, error) {
+	if !strings.Contains(value, "=") || value[0] == '=' {
+		return imageUpdate{}, cli.Rejection.Message(
+			"image",
+			fmt.Sprintf("invalid image format: %s", value),
+			cli.Rejection.At(0, 0, len(value)),
+		)
+	}
+	container, image, _ := strings.Cut(value, "=")
+	update := imageUpdate{
+		container: container,
+		image:     image,
+	}
+	return update, nil
+}
+
+var imageArgumentLanguage = cli.ValueCodec[imageArgument]{
+	Name: "kubectl-image-argument",
+	Parse: func(value string) (imageArgument, error) {
+		if !imagePairLike(value) {
+			argument := imageArgument{
+				kind:     imageArgumentResource,
+				resource: value,
+			}
+			return argument, nil
+		}
+		update, err := parseImageUpdate(value)
+		if err != nil {
+			return imageArgument{}, err
+		}
+		argument := imageArgument{
+			kind:   imageArgumentUpdate,
+			update: update,
+		}
+		return argument, nil
+	},
+	Format: func(argument imageArgument) string {
+		if argument.kind == imageArgumentResource {
+			return argument.resource
+		}
+		return argument.update.container + "=" + argument.update.image
+	},
+	Snapshot: cli.Value.Assign[imageArgument](),
+}
+
+func splitImageArguments(arguments []imageArgument) ([]string, map[string]string) {
+	resources := make([]string, 0, len(arguments))
+	images := make(map[string]string)
+	for _, argument := range arguments {
+		switch argument.kind {
+		case imageArgumentResource:
+			resources = append(resources, argument.resource)
+		case imageArgumentUpdate:
+			images[argument.update.container] = argument.update.image
+		}
+	}
+	return resources, images
+}
+
+func imageArgumentOrderValid(arguments []imageArgument) bool {
+	updateSeen := false
+	for _, argument := range arguments {
+		if argument.kind == imageArgumentUpdate {
+			updateSeen = true
+			continue
+		}
+		if updateSeen {
+			return false
+		}
+	}
+	return true
+}
+
+func imagePairLike(value string) bool {
+	return (strings.Contains(value, "=") && value[0] != '=') || (strings.HasSuffix(value, "-") && value != "-")
+}
+
+func validImageUpdates(images map[string]string) bool {
+	_, wildcard := images["*"]
+	return !wildcard || len(images) == 1
 }
 
 func setImageCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[setImageConfig] {
@@ -54,18 +159,29 @@ func setImageCommand(client cli.Destination[rootConfig, clientConfig]) cli.Comma
 			cb.Access.Stdin(&cb.Config.Streams.In)
 			cb.Access.Stdout(&cb.Config.Streams.Out)
 			cb.Access.Stderr(&cb.Config.Streams.ErrOut)
-			arguments := cb.Values.Sequence(&cb.Config.Arguments, cli.Value.String())
+			arguments := cb.Values.Sequence(&cb.Config.Arguments, imageArgumentLanguage)
+			resourceCompleter := resourceArgumentCompleter(
+				func(cfg *setImageConfig) (clientConfig, []string) {
+					resources, _ := splitImageArguments(cfg.Arguments)
+					return cfg.Client, resources
+				},
+				[]string{"daemonsets", "deployments", "pods", "cronjobs", "replicasets", "replicationcontrollers", "statefulsets"},
+				resourceArgumentSingle,
+			)
 			cb.Arguments.Form(func(form *cli.ArgumentFormBuilder[setImageConfig]) {
-				form.Sequence(arguments, "ARG", cli.Count.ZeroOrMore()).
-					CompleteBy(resourceArgumentCompleter(
-						func(cfg *setImageConfig) (clientConfig, []string) { return cfg.Client, cfg.Arguments },
-						[]string{"daemonsets", "deployments", "pods", "cronjobs", "replicasets", "replicationcontrollers", "statefulsets"},
-						resourceArgumentSingle,
-					)).
+				form.Sequence(arguments, "RESOURCE|CONTAINER=IMAGE", cli.Count.OneOrMore()).
+					CompleteBy(func(ctx context.Context, cfg *setImageConfig, request cli.ValueCompletionRequest) (cli.CompletionContribution, error) {
+						_, images := splitImageArguments(cfg.Arguments)
+						if len(images) != 0 {
+							return cli.CompletionContribution{}, nil
+						}
+						return resourceCompleter(ctx, cfg, request)
+					}).
 					From(client)
 			})
 
-			allFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.All))
+			all := cb.Values.Bool(&cb.Config.All)
+			allFlag := cb.Flags.ValueFor(all)
 			allFlag = allFlag.Description("Select all resources, in the namespace of the specified resource types")
 			allFlag.Long("all").ImplicitValue(true)
 
@@ -74,11 +190,12 @@ func setImageCommand(client cli.Destination[rootConfig, clientConfig]) cli.Comma
 			cb.Values.Default(allowMissingTemplateKeysFlag, true)
 			allowMissingTemplateKeysFlag.Long("allow-missing-template-keys").ImplicitValue(true)
 
-			dryRunFlag := cb.Flags.String(&cb.Config.DryRun)
+			dryRun := cb.Values.Value(&cb.Config.DryRun, dryRunValueLanguage)
+			dryRunFlag := cb.Flags.ValueFor(dryRun)
 			dryRunFlag = dryRunFlag.Description("Must be \"none\", \"server\", or \"client\". If client strategy, only print the object that would be sent, without sending it. If server strategy, submit server-side request without persisting the resource.")
-			cb.Values.Default(dryRunFlag, "none")
+			cb.Values.Default(dryRunFlag, util.DryRunNone)
 			dryRunFlagLong := dryRunFlag.Long("dry-run")
-			dryRunFlagLong.ImplicitValue("unchanged")
+			dryRunFlagLong.ImplicitValue(util.DryRunClient)
 
 			fieldManagerFlag := cb.Flags.String(&cb.Config.FieldManager)
 			fieldManagerFlag = fieldManagerFlag.Description("Name of the manager used to track field ownership.")
@@ -92,12 +209,14 @@ func setImageCommand(client cli.Destination[rootConfig, clientConfig]) cli.Comma
 			filenameFlag.Long("filename")
 			filenameFlag.Short('f')
 
-			kustomizeFlag := cb.Flags.String(&cb.Config.Kustomize)
+			kustomize := cb.Values.String(&cb.Config.Kustomize)
+			kustomizeFlag := cb.Flags.ValueFor(kustomize)
 			kustomizeFlag = kustomizeFlag.Description("Process the kustomization directory. This flag can't be used together with -f or -R.")
 			kustomizeFlag.Long("kustomize")
 			kustomizeFlag.Short('k')
 
-			localFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Local))
+			local := cb.Values.Bool(&cb.Config.Local)
+			localFlag := cb.Flags.ValueFor(local)
 			localFlag = localFlag.Description("If true, set image will NOT contact api-server but run locally.")
 			localFlag.Long("local").ImplicitValue(true)
 
@@ -111,12 +230,14 @@ func setImageCommand(client cli.Destination[rootConfig, clientConfig]) cli.Comma
 			recordFlag = recordFlag.Hidden().Release(preexistingDeprecation("--record will be removed in the future"))
 			recordFlag.Long("record").ImplicitValue(true)
 
-			recursiveFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Recursive))
+			recursive := cb.Values.Bool(&cb.Config.Recursive)
+			recursiveFlag := cb.Flags.ValueFor(recursive)
 			recursiveFlag = recursiveFlag.Description("Process the directory used in -f, --filename recursively. Useful when you want to manage related manifests organized within the same directory.")
 			recursiveFlag.Long("recursive").ImplicitValue(true)
 			recursiveFlag.Short('R').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
 
-			selectorFlag := cb.Flags.String(&cb.Config.Selector)
+			selector := cb.Values.String(&cb.Config.Selector)
+			selectorFlag := cb.Flags.ValueFor(selector)
 			selectorFlag = selectorFlag.Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
 			selectorFlag.Long("selector")
 			selectorFlag.Short('l')
@@ -128,6 +249,39 @@ func setImageCommand(client cli.Destination[rootConfig, clientConfig]) cli.Comma
 			templateFlag := cb.Flags.String(&cb.Config.Template)
 			templateFlag = templateFlag.Description("Template string or path to template file to use when -o=go-template, -o=go-template-file. The template format is golang templates [http://golang.org/pkg/text/template/#pkg-overview].")
 			templateFlag.Long("template")
+
+			cb.Rule.When(cb.When.Equal(all, true)).Equal(selector, "")
+			cb.Rule.AtMostOne(filenameValue, kustomize)
+			cb.Rule.When(cb.When.Equal(recursive, true)).Forbid(kustomize)
+			cb.Rule.Check("kubectl-set-image-argument-order", func(_ context.Context, cfg *setImageConfig, _ cli.Dependencies) (bool, error) {
+				return imageArgumentOrderValid(cfg.Arguments), nil
+			}).DependsOn(arguments.OptionalDependency())
+			cb.Rule.Check("kubectl-set-image-local-resources", func(_ context.Context, cfg *setImageConfig, _ cli.Dependencies) (bool, error) {
+				resources, _ := splitImageArguments(cfg.Arguments)
+				return !cfg.Local || len(resources) == 0, nil
+			}).
+				DependsOn(local.OptionalDependency()).
+				DependsOn(arguments.OptionalDependency())
+			cb.Rule.Check("kubectl-set-image-source", func(_ context.Context, cfg *setImageConfig, _ cli.Dependencies) (bool, error) {
+				resources, _ := splitImageArguments(cfg.Arguments)
+				return len(resources) != 0 || len(cfg.Filename) != 0 || cfg.Kustomize != "", nil
+			}).
+				DependsOn(arguments.OptionalDependency()).
+				DependsOn(filenameValue.OptionalDependency()).
+				DependsOn(kustomize.OptionalDependency())
+			cb.Rule.Check("kubectl-set-image-update", func(_ context.Context, cfg *setImageConfig, _ cli.Dependencies) (bool, error) {
+				_, images := splitImageArguments(cfg.Arguments)
+				return len(images) != 0, nil
+			}).DependsOn(arguments.OptionalDependency())
+			cb.Rule.Check("kubectl-set-image-wildcard", func(_ context.Context, cfg *setImageConfig, _ cli.Dependencies) (bool, error) {
+				_, images := splitImageArguments(cfg.Arguments)
+				return validImageUpdates(images), nil
+			}).DependsOn(arguments.OptionalDependency())
+			cb.Rule.Check("kubectl-set-image-local-dry-run", func(_ context.Context, cfg *setImageConfig, _ cli.Dependencies) (bool, error) {
+				return !cfg.Local || cfg.DryRun != util.DryRunServer, nil
+			}).
+				DependsOn(local.OptionalDependency()).
+				DependsOn(dryRun.OptionalDependency())
 		},
 		Run: runSetImage,
 	}

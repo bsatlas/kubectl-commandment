@@ -18,20 +18,8 @@ import (
 	"k8s.io/kubectl/pkg/scheme"
 )
 
-func runSetServiceAccount(_ context.Context, cfg *setServiceAccountConfig) error {
-	strategy, err := dryRunStrategy(cfg.DryRun)
-	if err != nil {
-		return err
-	}
-	if cfg.Local && strategy == util.DryRunServer {
-		return fmt.Errorf("cannot specify --local and --dry-run=server - did you mean --dry-run=client?")
-	}
-	if len(cfg.Arguments) == 0 {
-		return fmt.Errorf("serviceaccount is required")
-	}
-	serviceAccount := cfg.Arguments[len(cfg.Arguments)-1]
-	resources := cfg.Arguments[:len(cfg.Arguments)-1]
-
+func runSetResources(_ context.Context, cfg *setResourcesConfig) error {
+	strategy := cfg.DryRun
 	factory := cfg.Client.factory()
 	namespace, enforceNamespace, err := factory.ToRawKubeConfigLoader().Namespace()
 	if err != nil && !(cfg.Local && clientcmd.IsEmptyConfig(err)) {
@@ -50,14 +38,14 @@ func runSetServiceAccount(_ context.Context, cfg *setServiceAccountConfig) error
 		FilenameParam(enforceNamespace, &filename).
 		Flatten()
 	if !cfg.Local {
-		builder = builder.ResourceTypeOrNameArgs(cfg.All, resources...).Latest()
+		builder = builder.LabelSelectorParam(cfg.Selector).ResourceTypeOrNameArgs(cfg.All, cfg.Resources...).Latest()
 	}
 	infos, err := builder.Do().Infos()
 	if err != nil {
 		return err
 	}
 
-	printFlags := genericclioptions.NewPrintFlags("serviceaccount updated").WithTypeSetter(scheme.Scheme)
+	printFlags := genericclioptions.NewPrintFlags("resource requirements updated").WithTypeSetter(scheme.Scheme)
 	configurePrintFlags(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
 	printObj, err := printObject(printFlags, strategy, cfg.Streams.Out)
 	if err != nil {
@@ -66,7 +54,7 @@ func runSetServiceAccount(_ context.Context, cfg *setServiceAccountConfig) error
 	recordFlags := genericclioptions.NewRecordFlags()
 	*recordFlags.Record = cfg.Record
 	if cfg.Record {
-		if err := recordFlags.CompleteWithChangeCause("kubectl set serviceaccount"); err != nil {
+		if err := recordFlags.CompleteWithChangeCause("kubectl set resources"); err != nil {
 			return err
 		}
 	}
@@ -75,13 +63,37 @@ func runSetServiceAccount(_ context.Context, cfg *setServiceAccountConfig) error
 		return err
 	}
 
+	var allErrs []error
 	patches := set.CalculatePatches(infos, scheme.DefaultJSONEncoder(), func(object runtime.Object) ([]byte, error) {
+		transformed := false
 		_, err := polymorphichelpers.UpdatePodSpecForObjectFn(object, func(spec *v1.PodSpec) error {
-			spec.ServiceAccountName = serviceAccount
+			containers := append(selectContainers(spec.Containers, cfg.Containers), selectContainers(spec.InitContainers, cfg.Containers)...)
+			if len(containers) == 0 {
+				allErrs = append(allErrs, fmt.Errorf("error: unable to find container named %s", cfg.Containers))
+				return nil
+			}
+			for _, container := range containers {
+				if len(cfg.Limits) > 0 && container.Resources.Limits == nil {
+					container.Resources.Limits = v1.ResourceList{}
+				}
+				for key, value := range cfg.Limits {
+					container.Resources.Limits[key] = value
+				}
+				if len(cfg.Requests) > 0 && container.Resources.Requests == nil {
+					container.Resources.Requests = v1.ResourceList{}
+				}
+				for key, value := range cfg.Requests {
+					container.Resources.Requests[key] = value
+				}
+				transformed = true
+			}
 			return nil
 		})
 		if err != nil {
 			return nil, err
+		}
+		if !transformed {
+			return nil, nil
 		}
 		if err := recorder.Record(object); err != nil {
 			klog.V(4).Infof("error recording current command: %v", err)
@@ -89,11 +101,13 @@ func runSetServiceAccount(_ context.Context, cfg *setServiceAccountConfig) error
 		return runtime.Encode(scheme.DefaultJSONEncoder(), object)
 	})
 
-	var allErrs []error
 	for _, patch := range patches {
 		info := patch.Info
 		if patch.Err != nil {
 			allErrs = append(allErrs, fmt.Errorf("error: %s %v", info.ObjectName(), patch.Err))
+			continue
+		}
+		if len(patch.Patch) == 0 || string(patch.Patch) == "{}" {
 			continue
 		}
 		if cfg.Local || strategy == util.DryRunClient {
@@ -107,7 +121,7 @@ func runSetServiceAccount(_ context.Context, cfg *setServiceAccountConfig) error
 			WithFieldManager(cfg.FieldManager).
 			Patch(info.Namespace, info.Name, types.StrategicMergePatchType, patch.Patch, nil)
 		if err != nil {
-			allErrs = append(allErrs, fmt.Errorf("failed to patch ServiceAccountName %v", err))
+			allErrs = append(allErrs, fmt.Errorf("failed to patch resources update to pod template %v", err))
 			continue
 		}
 		if err := printObj(actual); err != nil {

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+
 	"github.com/abstractionsinc/commandment/cli"
 	"k8s.io/cli-runtime/pkg/genericiooptions"
 )
@@ -10,7 +12,6 @@ type diffConfig struct {
 	Streams           genericiooptions.IOStreams
 	Concurrency       int
 	FieldManager      string
-	FieldManagerState cli.OptionalValue[cli.ValueState]
 	Filename          []string
 	ForceConflicts    bool
 	Kustomize         string
@@ -46,29 +47,45 @@ func diffCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[d
 			cb.Access.Stdout(&cb.Config.Streams.Out)
 			cb.Access.Stderr(&cb.Config.Streams.ErrOut)
 
+			fieldManager := cb.Values.String(&cb.Config.FieldManager)
+			filename := cb.Values.Sequence(&cb.Config.Filename, cli.Value.String())
+			forceConflicts := cb.Values.Bool(&cb.Config.ForceConflicts)
+			kustomize := cb.Values.String(&cb.Config.Kustomize)
+			recursive := cb.Values.Bool(&cb.Config.Recursive)
+			serverSide := cb.Values.Bool(&cb.Config.ServerSide)
+
 			concurrencyFlag := cb.Flags.Int(&cb.Config.Concurrency)
 			concurrencyFlag = concurrencyFlag.Description("Number of objects to process in parallel when diffing against the live version. Larger number = faster, but more memory, I/O and CPU over that shorter period of time.")
 			cb.Values.Default(concurrencyFlag, 1)
 			concurrencyFlag.Long("concurrency")
 
-			fieldManagerFlag := cb.Flags.String(&cb.Config.FieldManager)
+			cb.Values.OptionalComputedDefault(
+				fieldManager,
+				cli.Value.OptionallyComputedBy(func(_ context.Context, _ *diffConfig, dependencies cli.Dependencies) (cli.ValueContribution[string], error) {
+					server, _ := dependencies.Get(serverSide)
+					if server {
+						return cli.ContributeValue("kubectl"), nil
+					}
+					return cli.OmitValue[string](), nil
+				}).From(serverSide.OptionalDependency()),
+			)
+			cb.Values.Default(fieldManager, "kubectl-client-side-apply")
+			fieldManagerFlag := cb.Flags.ValueFor(fieldManager)
 			fieldManagerFlag = fieldManagerFlag.Description("Name of the manager used to track field ownership.")
-			cb.Values.Default(fieldManagerFlag, "kubectl-client-side-apply")
 			fieldManagerFlag.Long("field-manager")
-			cb.Access.ValueState(fieldManagerFlag, &cb.Config.FieldManagerState)
 
-			filenameValue := cb.Values.Sequence(&cb.Config.Filename, cli.Value.String())
+			filenameValue := filename
 			filenameFlag := cb.Flags.Sequence(filenameValue)
 			filenameFlag = filenameFlag.DelimitedBy(",")
 			filenameFlag = filenameFlag.Description("Filename, directory, or URL to files contains the configuration to diff")
 			filenameFlag.Long("filename")
 			filenameFlag.Short('f')
 
-			forceConflictsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ForceConflicts))
+			forceConflictsFlag := cb.Flags.ValueFor(forceConflicts)
 			forceConflictsFlag = forceConflictsFlag.Description("If true, server-side apply will force the changes against conflicts.")
 			forceConflictsFlag.Long("force-conflicts").ImplicitValue(true)
 
-			kustomizeFlag := cb.Flags.String(&cb.Config.Kustomize)
+			kustomizeFlag := cb.Flags.ValueFor(kustomize)
 			kustomizeFlag = kustomizeFlag.Description("Process the kustomization directory. This flag can't be used together with -f or -R.")
 			kustomizeFlag.Long("kustomize")
 			kustomizeFlag.Short('k')
@@ -82,7 +99,7 @@ func diffCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[d
 			pruneAllowlistFlag = pruneAllowlistFlag.Description("Overwrite the default allowlist with <group/version/kind> for --prune")
 			pruneAllowlistFlag.Long("prune-allowlist")
 
-			recursiveFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Recursive))
+			recursiveFlag := cb.Flags.ValueFor(recursive)
 			recursiveFlag = recursiveFlag.Description("Process the directory used in -f, --filename recursively. Useful when you want to manage related manifests organized within the same directory.")
 			recursiveFlag.Long("recursive").ImplicitValue(true)
 			recursiveFlag.Short('R').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
@@ -92,7 +109,7 @@ func diffCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[d
 			selectorFlag.Long("selector")
 			selectorFlag.Short('l')
 
-			serverSideFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ServerSide))
+			serverSideFlag := cb.Flags.ValueFor(serverSide)
 			serverSideFlag = serverSideFlag.Description("If true, apply runs in the server instead of the client.")
 			serverSideFlag.Long("server-side").ImplicitValue(true)
 
@@ -103,6 +120,12 @@ func diffCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[d
 			showSecretsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowSecrets))
 			showSecretsFlag = showSecretsFlag.Description("If true, do not mask secret values in the diff.")
 			showSecretsFlag.Long("show-secrets").ImplicitValue(true)
+
+			cb.Rule.AtMostOne(filename, kustomize)
+			cb.Rule.When(cb.When.Equal(recursive, true)).Forbid(kustomize)
+			cb.Rule.AtLeastOne(filename, kustomize)
+			cb.Rule.When(cb.When.Equal(forceConflicts, true)).Require(serverSide)
+			cb.Rule.When(cb.When.Equal(forceConflicts, true)).Equal(serverSide, true)
 		},
 		Run: runDiff,
 	}

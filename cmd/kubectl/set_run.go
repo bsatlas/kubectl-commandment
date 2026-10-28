@@ -23,23 +23,24 @@ func matchContainerName(name, pattern string) bool {
 	if !strings.Contains(pattern, "*") {
 		return name == pattern
 	}
-	parts := strings.Split(pattern, "*")
+
 	position := 0
+	parts := strings.Split(pattern, "*")
 	for index, part := range parts {
 		if part == "" {
 			continue
 		}
-		relative := strings.Index(name[position:], part)
-		if relative < 0 {
+
+		next := strings.Index(name[position:], part)
+		switch {
+		case next < position:
 			return false
-		}
-		absolute := position + relative
-		if index == 0 && absolute != 0 {
+		case index == 0 && position != 0:
 			return false
-		}
-		position = absolute + len(part)
-		if index == len(parts)-1 && position != len(name) {
+		case index == len(parts)-1 && len(name) != len(part)+next:
 			return false
+		default:
+			position = next
 		}
 	}
 	return true

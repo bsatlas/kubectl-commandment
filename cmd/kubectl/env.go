@@ -1,19 +1,26 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"strings"
+
 	"github.com/abstractionsinc/commandment/cli"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/cli-runtime/pkg/genericiooptions"
+	"k8s.io/kubectl/pkg/cmd/set/env"
+	"k8s.io/kubectl/pkg/cmd/util"
 )
 
 type setEnvConfig struct {
 	Client                   clientConfig
 	Streams                  genericiooptions.IOStreams
-	Arguments                []string
+	Arguments                []envArgument
 	All                      bool
 	AllowMissingTemplateKeys bool
 	Containers               string
-	DryRun                   string
-	Env                      []string
+	DryRun                   util.DryRunStrategy
+	Env                      []envChange
 	FieldManager             string
 	Filename                 []string
 	From                     string
@@ -29,6 +36,172 @@ type setEnvConfig struct {
 	Selector                 string
 	ShowManagedFields        bool
 	Template                 string
+}
+
+type envArgumentKind uint8
+
+const (
+	envArgumentResource envArgumentKind = iota
+	envArgumentChange
+)
+
+type envArgument struct {
+	kind     envArgumentKind
+	resource string
+	change   envChange
+}
+
+type envChangeKind uint8
+
+const (
+	envChangeSet envChangeKind = iota
+	envChangeRemove
+	envChangeStdin
+)
+
+type envChange struct {
+	kind  envChangeKind
+	name  string
+	value string
+}
+
+func envArgumentLike(value string) bool {
+	return env.IsEnvironmentArgument(value) || strings.HasSuffix(value, "-")
+}
+
+func parseEnvChange(value string) (envChange, error) {
+	switch {
+	case value == "-":
+		change := envChange{
+			kind: envChangeStdin,
+		}
+		return change, nil
+	case env.IsEnvironmentArgument(value):
+		name, envValue, _ := strings.Cut(value, "=")
+		if problems := validation.IsEnvVarName(name); len(problems) != 0 {
+			return envChange{}, cli.Rejection.Message(
+				"environment-variable",
+				fmt.Sprintf("%q is not a valid key name: %s", name, strings.Join(problems, ";")),
+				cli.Rejection.At(0, 0, len(value)),
+			)
+		}
+		change := envChange{
+			kind:  envChangeSet,
+			name:  name,
+			value: envValue,
+		}
+		return change, nil
+	case strings.HasSuffix(value, "-"):
+		change := envChange{
+			kind: envChangeRemove,
+			name: strings.TrimSuffix(value, "-"),
+		}
+		return change, nil
+	default:
+		return envChange{}, cli.Rejection.Message(
+			"environment-variable",
+			fmt.Sprintf("unknown environment variable: %v", value),
+			cli.Rejection.At(0, 0, len(value)),
+		)
+	}
+}
+
+var envArgumentLanguage = cli.ValueCodec[envArgument]{
+	Name: "kubectl-env-argument",
+	Parse: func(value string) (envArgument, error) {
+		if !envArgumentLike(value) {
+			argument := envArgument{
+				kind:     envArgumentResource,
+				resource: value,
+			}
+			return argument, nil
+		}
+		change, err := parseEnvChange(value)
+		if err != nil {
+			return envArgument{}, err
+		}
+		argument := envArgument{
+			kind:   envArgumentChange,
+			change: change,
+		}
+		return argument, nil
+	},
+	Format: func(argument envArgument) string {
+		if argument.kind == envArgumentResource {
+			return argument.resource
+		}
+		return formatEnvChange(argument.change)
+	},
+	Snapshot: cli.Value.Assign[envArgument](),
+}
+
+var envChangeLanguage = cli.ValueCodec[envChange]{
+	Name:     "kubectl-env-change",
+	Parse:    parseEnvChange,
+	Format:   formatEnvChange,
+	Snapshot: cli.Value.Assign[envChange](),
+}
+
+func formatEnvChange(change envChange) string {
+	switch change.kind {
+	case envChangeSet:
+		return change.name + "=" + change.value
+	case envChangeRemove:
+		return change.name + "-"
+	case envChangeStdin:
+		return "-"
+	default:
+		return ""
+	}
+}
+
+func splitEnvArguments(arguments []envArgument) ([]string, []envChange) {
+	resources := make([]string, 0, len(arguments))
+	changes := make([]envChange, 0, len(arguments))
+	for _, argument := range arguments {
+		switch argument.kind {
+		case envArgumentResource:
+			resources = append(resources, argument.resource)
+		case envArgumentChange:
+			changes = append(changes, argument.change)
+		}
+	}
+	return resources, changes
+}
+
+func envArgumentOrderValid(arguments []envArgument) bool {
+	changeSeen := false
+	for _, argument := range arguments {
+		if argument.kind == envArgumentChange {
+			changeSeen = true
+			continue
+		}
+		if changeSeen {
+			return false
+		}
+	}
+	return true
+}
+
+func compatibleEnvChanges(changes ...[]envChange) bool {
+	set := map[string]struct{}{}
+	remove := map[string]struct{}{}
+	for _, group := range changes {
+		for _, change := range group {
+			switch change.kind {
+			case envChangeSet:
+				set[change.name] = struct{}{}
+			case envChangeRemove:
+				remove[change.name] = struct{}{}
+			}
+		}
+	}
+	for name := range remove {
+		if _, ok := set[name]; ok {
+			return false
+		}
+	}
+	return true
 }
 
 func setEnvCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[setEnvConfig] {
@@ -89,12 +262,29 @@ func setEnvCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command
 			cb.Access.Stdin(&cb.Config.Streams.In)
 			cb.Access.Stdout(&cb.Config.Streams.Out)
 			cb.Access.Stderr(&cb.Config.Streams.ErrOut)
-			arguments := cb.Values.Sequence(&cb.Config.Arguments, cli.Value.String())
+			arguments := cb.Values.Sequence(&cb.Config.Arguments, envArgumentLanguage)
+			resourceCompleter := resourceArgumentCompleter(
+				func(cfg *setEnvConfig) (clientConfig, []string) {
+					resources, _ := splitEnvArguments(cfg.Arguments)
+					return cfg.Client, resources
+				},
+				[]string{"daemonsets", "deployments", "pods", "cronjobs", "replicasets", "replicationcontrollers", "statefulsets"},
+				resourceArgumentSingle,
+			)
 			cb.Arguments.Form(func(form *cli.ArgumentFormBuilder[setEnvConfig]) {
-				form.Sequence(arguments, "ARG", cli.Count.ZeroOrMore())
+				form.Sequence(arguments, "RESOURCE|KEY=VALUE|KEY-", cli.Count.ZeroOrMore()).
+					CompleteBy(func(ctx context.Context, cfg *setEnvConfig, request cli.ValueCompletionRequest) (cli.CompletionContribution, error) {
+						_, changes := splitEnvArguments(cfg.Arguments)
+						if len(changes) != 0 {
+							return cli.CompletionContribution{}, nil
+						}
+						return resourceCompleter(ctx, cfg, request)
+					}).
+					From(client)
 			})
 
-			allFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.All))
+			all := cb.Values.Bool(&cb.Config.All)
+			allFlag := cb.Flags.ValueFor(all)
 			allFlag = allFlag.Description("If true, select all resources in the namespace of the specified resource types")
 			allFlag.Long("all").ImplicitValue(true)
 
@@ -109,13 +299,14 @@ func setEnvCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command
 			containersFlag.Long("containers")
 			containersFlag.Short('c')
 
-			dryRunFlag := cb.Flags.String(&cb.Config.DryRun)
+			dryRun := cb.Values.Value(&cb.Config.DryRun, dryRunValueLanguage)
+			dryRunFlag := cb.Flags.ValueFor(dryRun)
 			dryRunFlag = dryRunFlag.Description("Must be \"none\", \"server\", or \"client\". If client strategy, only print the object that would be sent, without sending it. If server strategy, submit server-side request without persisting the resource.")
-			cb.Values.Default(dryRunFlag, "none")
+			cb.Values.Default(dryRunFlag, util.DryRunNone)
 			dryRunFlagLong := dryRunFlag.Long("dry-run")
-			dryRunFlagLong.ImplicitValue("unchanged")
+			dryRunFlagLong.ImplicitValue(util.DryRunClient)
 
-			envValue := cb.Values.Sequence(&cb.Config.Env, cli.Value.String())
+			envValue := cb.Values.Sequence(&cb.Config.Env, envChangeLanguage)
 			envFlag := cb.Flags.Sequence(envValue)
 			envFlag = envFlag.Description("Specify a key-value pair for an environment variable to set into each container.")
 			envFlag.Long("env")
@@ -133,7 +324,8 @@ func setEnvCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command
 			filenameFlag.Long("filename")
 			filenameFlag.Short('f')
 
-			fromFlag := cb.Flags.String(&cb.Config.From)
+			from := cb.Values.String(&cb.Config.From)
+			fromFlag := cb.Flags.ValueFor(from)
 			fromFlag = fromFlag.Description("The name of a resource from which to inject environment variables")
 			fromFlag.Long("from")
 
@@ -143,20 +335,24 @@ func setEnvCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command
 			keysFlag = keysFlag.Description("Comma-separated list of keys to import from specified resource")
 			keysFlag.Long("keys")
 
-			kustomizeFlag := cb.Flags.String(&cb.Config.Kustomize)
+			kustomize := cb.Values.String(&cb.Config.Kustomize)
+			kustomizeFlag := cb.Flags.ValueFor(kustomize)
 			kustomizeFlag = kustomizeFlag.Description("Process the kustomization directory. This flag can't be used together with -f or -R.")
 			kustomizeFlag.Long("kustomize")
 			kustomizeFlag.Short('k')
 
-			listFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.List))
+			list := cb.Values.Bool(&cb.Config.List)
+			listFlag := cb.Flags.ValueFor(list)
 			listFlag = listFlag.Description("If true, display the environment and any changes in the standard format. this flag will removed when we have kubectl view env.")
 			listFlag.Long("list").ImplicitValue(true)
 
-			localFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Local))
+			local := cb.Values.Bool(&cb.Config.Local)
+			localFlag := cb.Flags.ValueFor(local)
 			localFlag = localFlag.Description("If true, set env will NOT contact api-server but run locally.")
 			localFlag.Long("local").ImplicitValue(true)
 
-			outputFlag := cb.Flags.String(&cb.Config.Output)
+			output := cb.Values.String(&cb.Config.Output)
+			outputFlag := cb.Flags.ValueFor(output)
 			outputFlag = outputFlag.Description("Output format. One of: (json, yaml, kyaml, name, go-template, go-template-file, template, templatefile, jsonpath, jsonpath-as-json, jsonpath-file).")
 			outputFlag.Long("output")
 			outputFlag.Short('o')
@@ -170,7 +366,8 @@ func setEnvCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command
 			prefixFlag = prefixFlag.Description("Prefix to append to variable names")
 			prefixFlag.Long("prefix")
 
-			recursiveFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Recursive))
+			recursive := cb.Values.Bool(&cb.Config.Recursive)
+			recursiveFlag := cb.Flags.ValueFor(recursive)
 			recursiveFlag = recursiveFlag.Description("Process the directory used in -f, --filename recursively. Useful when you want to manage related manifests organized within the same directory.")
 			recursiveFlag.Long("recursive").ImplicitValue(true)
 			recursiveFlag.Short('R').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
@@ -179,7 +376,8 @@ func setEnvCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command
 			resolveFlag = resolveFlag.Description("If true, show secret or configmap references when listing variables")
 			resolveFlag.Long("resolve").ImplicitValue(true)
 
-			selectorFlag := cb.Flags.String(&cb.Config.Selector)
+			selector := cb.Values.String(&cb.Config.Selector)
+			selectorFlag := cb.Flags.ValueFor(selector)
 			selectorFlag = selectorFlag.Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
 			selectorFlag.Long("selector")
 			selectorFlag.Short('l')
@@ -191,6 +389,42 @@ func setEnvCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command
 			templateFlag := cb.Flags.String(&cb.Config.Template)
 			templateFlag = templateFlag.Description("Template string or path to template file to use when -o=go-template, -o=go-template-file. The template format is golang templates [http://golang.org/pkg/text/template/#pkg-overview].")
 			templateFlag.Long("template")
+
+			cb.Rule.When(cb.When.Equal(all, true)).Equal(selector, "")
+			cb.Rule.AtMostOne(filenameValue, kustomize)
+			cb.Rule.When(cb.When.Equal(recursive, true)).Forbid(kustomize)
+			cb.Rule.Check("kubectl-set-env-argument-order", func(_ context.Context, cfg *setEnvConfig, _ cli.Dependencies) (bool, error) {
+				return envArgumentOrderValid(cfg.Arguments), nil
+			}).DependsOn(arguments.OptionalDependency())
+			cb.Rule.Check("kubectl-set-env-local-resources", func(_ context.Context, cfg *setEnvConfig, _ cli.Dependencies) (bool, error) {
+				resources, _ := splitEnvArguments(cfg.Arguments)
+				return !cfg.Local || len(resources) == 0, nil
+			}).
+				DependsOn(local.OptionalDependency()).
+				DependsOn(arguments.OptionalDependency())
+			cb.Rule.Check("kubectl-set-env-source", func(_ context.Context, cfg *setEnvConfig, _ cli.Dependencies) (bool, error) {
+				resources, _ := splitEnvArguments(cfg.Arguments)
+				return len(resources) != 0 || len(cfg.Filename) != 0, nil
+			}).
+				DependsOn(arguments.OptionalDependency()).
+				DependsOn(filenameValue.OptionalDependency())
+			cb.Rule.When(cb.When.Equal(list, true)).Equal(output, "")
+			cb.Rule.Check("kubectl-set-env-keys-from", func(_ context.Context, cfg *setEnvConfig, _ cli.Dependencies) (bool, error) {
+				return len(cfg.Keys) == 0 || cfg.From != "", nil
+			}).
+				DependsOn(keysValue.OptionalDependency()).
+				DependsOn(from.OptionalDependency())
+			cb.Rule.Check("kubectl-set-env-change-conflict", func(_ context.Context, cfg *setEnvConfig, _ cli.Dependencies) (bool, error) {
+				_, positional := splitEnvArguments(cfg.Arguments)
+				return compatibleEnvChanges(cfg.Env, positional), nil
+			}).
+				DependsOn(envValue.OptionalDependency()).
+				DependsOn(arguments.OptionalDependency())
+			cb.Rule.Check("kubectl-set-env-local-dry-run", func(_ context.Context, cfg *setEnvConfig, _ cli.Dependencies) (bool, error) {
+				return !cfg.Local || cfg.DryRun != util.DryRunServer, nil
+			}).
+				DependsOn(local.OptionalDependency()).
+				DependsOn(dryRun.OptionalDependency())
 		},
 		Run: runSetEnv,
 	}

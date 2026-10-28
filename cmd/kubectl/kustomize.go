@@ -1,29 +1,85 @@
 package main
 
 import (
+	"fmt"
 	"io"
+	"strconv"
 
 	"github.com/abstractionsinc/commandment/cli"
+	"sigs.k8s.io/kustomize/api/konfig"
+	"sigs.k8s.io/kustomize/api/krusty"
+	"sigs.k8s.io/kustomize/api/types"
 )
 
 type kustomizeConfig struct {
 	Stdout               io.Writer
-	Arguments            []string
+	Directory            string
 	AsCurrentUser        bool
 	EnableAlphaPlugins   bool
 	EnableHelm           bool
 	EnableManagedbyLabel bool
+	ManagedbyLabelEnv    bool
 	Env                  []string
 	HelmAPIVersions      []string
 	HelmCommand          string
 	HelmDebug            bool
 	HelmKubeVersion      string
-	LoadRestrictor       string
+	LoadRestrictor       types.LoadRestrictions
 	Mount                []string
 	Network              bool
 	NetworkName          string
 	Output               string
-	Reorder              string
+	Reorder              krusty.ReorderOption
+	ReorderState         cli.OptionalValue[cli.ValueState]
+}
+
+var managedbyLabelEnvironmentLanguage = cli.ValueCodec[bool]{
+	Name: "kustomize-managedby-label-environment",
+	Parse: func(value string) (bool, error) {
+		return value == "on", nil
+	},
+	Format:   strconv.FormatBool,
+	Snapshot: cli.Value.Assign[bool](),
+}
+
+var loadRestrictionsLanguage = cli.ValueCodec[types.LoadRestrictions]{
+	Name: "kustomize-load-restrictor",
+	Parse: func(value string) (types.LoadRestrictions, error) {
+		switch value {
+		case "", types.LoadRestrictionsRootOnly.String():
+			return types.LoadRestrictionsRootOnly, nil
+		case types.LoadRestrictionsNone.String():
+			return types.LoadRestrictionsNone, nil
+		default:
+			return 0, cli.Rejection.Message(
+				"load-restrictor",
+				fmt.Sprintf("illegal flag value --load-restrictor %s; legal values: [%s %s]", value, types.LoadRestrictionsRootOnly.String(), types.LoadRestrictionsNone.String()),
+				cli.Rejection.At(0, 0, len(value)),
+			)
+		}
+	},
+	Format:   func(value types.LoadRestrictions) string { return value.String() },
+	Snapshot: cli.Value.Assign[types.LoadRestrictions](),
+}
+
+var reorderLanguage = cli.ValueCodec[krusty.ReorderOption]{
+	Name: "kustomize-reorder",
+	Parse: func(value string) (krusty.ReorderOption, error) {
+		switch value {
+		case string(krusty.ReorderOptionLegacy):
+			return krusty.ReorderOptionLegacy, nil
+		case string(krusty.ReorderOptionNone):
+			return krusty.ReorderOptionNone, nil
+		default:
+			return "", cli.Rejection.Message(
+				"reorder",
+				fmt.Sprintf("illegal flag value --reorder %s; legal values: [%s %s]", value, krusty.ReorderOptionLegacy, krusty.ReorderOptionNone),
+				cli.Rejection.At(0, 0, len(value)),
+			)
+		}
+	},
+	Format:   func(value krusty.ReorderOption) string { return string(value) },
+	Snapshot: cli.Value.Assign[krusty.ReorderOption](),
 }
 
 var kustomizeCommand = cli.Command[kustomizeConfig]{
@@ -49,10 +105,8 @@ var kustomizeCommand = cli.Command[kustomizeConfig]{
 	Declare: func(cb *cli.CommandBuilder[kustomizeConfig]) {
 		cb.Access.Stdout(&cb.Config.Stdout)
 
-		arguments := cb.Values.Sequence(&cb.Config.Arguments, cli.Value.String())
-		cb.Arguments.Form(func(form *cli.ArgumentFormBuilder[kustomizeConfig]) {
-			form.Sequence(arguments, "DIR", cli.Count.ZeroOrMore())
-		})
+		directory := cb.Values.String(&cb.Config.Directory)
+		cb.Arguments.ValueFor(directory, "DIR").Optional()
 
 		asCurrentUserFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.AsCurrentUser))
 		asCurrentUserFlag.Description("use the uid and gid of the command executor to run the function in the container").Long("as-current-user").ImplicitValue(true)
@@ -66,6 +120,9 @@ var kustomizeCommand = cli.Command[kustomizeConfig]{
 		enableManagedbyLabelFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.EnableManagedbyLabel))
 		enableManagedbyLabelFlag = enableManagedbyLabelFlag.Description("enable adding app.kubernetes.io/managed-by").Hidden().Release(preexistingDeprecation("The flag `enable-managedby-label` has been deprecated. Use the `managedByLabel` option in the `buildMetadata` field instead."))
 		enableManagedbyLabelFlag.Long("enable-managedby-label").ImplicitValue(true)
+
+		managedbyLabelEnv := cb.Values.Value(&cb.Config.ManagedbyLabelEnv, managedbyLabelEnvironmentLanguage)
+		cb.Values.Environment(managedbyLabelEnv, konfig.EnableManagedbyLabelEnv)
 
 		envValue := cb.Values.Sequence(&cb.Config.Env, cli.Value.String())
 		envFlag := cb.Flags.Sequence(envValue)
@@ -86,9 +143,10 @@ var kustomizeCommand = cli.Command[kustomizeConfig]{
 		helmKubeVersionFlag := cb.Flags.String(&cb.Config.HelmKubeVersion)
 		helmKubeVersionFlag.Description("Kubernetes version used by Helm for Capabilities.KubeVersion").Long("helm-kube-version")
 
-		loadRestrictorFlag := cb.Flags.String(&cb.Config.LoadRestrictor)
+		loadRestrictor := cb.Values.Value(&cb.Config.LoadRestrictor, loadRestrictionsLanguage)
+		loadRestrictorFlag := cb.Flags.ValueFor(loadRestrictor)
 		loadRestrictorFlag.Description("if set to 'LoadRestrictionsNone', local kustomizations may load files from outside their root. This does, however, break the relocatability of the kustomization.").Long("load-restrictor")
-		cb.Values.Default(loadRestrictorFlag, "LoadRestrictionsRootOnly")
+		cb.Values.Default(loadRestrictorFlag, types.LoadRestrictionsRootOnly)
 
 		mountValue := cb.Values.Sequence(&cb.Config.Mount, cli.Value.String())
 		mountFlag := cb.Flags.Sequence(mountValue)
@@ -105,10 +163,12 @@ var kustomizeCommand = cli.Command[kustomizeConfig]{
 		outputFlag.Description("If specified, write output to this path.").Long("output")
 		outputFlag.Short('o')
 
-		reorderFlag := cb.Flags.String(&cb.Config.Reorder)
+		reorder := cb.Values.Value(&cb.Config.Reorder, reorderLanguage)
+		reorderFlag := cb.Flags.ValueFor(reorder)
 		reorderFlag = reorderFlag.Description("Reorder the resources just before output. Use 'legacy' to apply a legacy reordering (Namespaces first, Webhooks last, etc). Use 'none' to suppress a final reordering.").Hidden().Release(preexistingDeprecation("use the new 'sortOptions' field in kustomization.yaml instead."))
 		reorderFlag.Long("reorder")
-		cb.Values.Default(reorderFlag, "legacy")
+		cb.Values.Default(reorderFlag, krusty.ReorderOptionLegacy)
+		cb.Access.ValueState(reorder, &cb.Config.ReorderState)
 	},
 	Run: runKustomize,
 }

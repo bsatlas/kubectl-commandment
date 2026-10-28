@@ -1,17 +1,21 @@
 package main
 
 import (
+	"context"
+	"strings"
+
 	"github.com/abstractionsinc/commandment/cli"
 	"k8s.io/cli-runtime/pkg/genericiooptions"
+	"k8s.io/kubectl/pkg/cmd/util"
 )
 
 type setSubjectConfig struct {
 	Client                   clientConfig
 	Streams                  genericiooptions.IOStreams
-	Arguments                []string
+	Resources                []string
 	All                      bool
 	AllowMissingTemplateKeys bool
-	DryRun                   string
+	DryRun                   util.DryRunStrategy
 	FieldManager             string
 	Filename                 []string
 	Group                    []string
@@ -20,10 +24,38 @@ type setSubjectConfig struct {
 	Output                   string
 	Recursive                bool
 	Selector                 string
-	ServiceAccounts          []string
+	ServiceAccounts          []subjectServiceAccount
 	ShowManagedFields        bool
 	Template                 string
 	User                     []string
+}
+
+type subjectServiceAccount struct {
+	namespace string
+	name      string
+}
+
+var subjectServiceAccountLanguage = cli.ValueCodec[subjectServiceAccount]{
+	Name: "kubectl-subject-service-account",
+	Parse: func(value string) (subjectServiceAccount, error) {
+		namespace, name, found := strings.Cut(value, ":")
+		if !found || name == "" || strings.Contains(name, ":") {
+			return subjectServiceAccount{}, cli.Rejection.Message(
+				"serviceaccount",
+				"serviceaccount must be <namespace>:<name>",
+				cli.Rejection.At(0, 0, len(value)),
+			)
+		}
+		serviceAccount := subjectServiceAccount{
+			namespace: namespace,
+			name:      name,
+		}
+		return serviceAccount, nil
+	},
+	Format: func(value subjectServiceAccount) string {
+		return value.namespace + ":" + value.name
+	},
+	Snapshot: cli.Value.Assign[subjectServiceAccount](),
 }
 
 func setSubjectCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[setSubjectConfig] {
@@ -52,12 +84,13 @@ func setSubjectCommand(client cli.Destination[rootConfig, clientConfig]) cli.Com
 			cb.Access.Stdin(&cb.Config.Streams.In)
 			cb.Access.Stdout(&cb.Config.Streams.Out)
 			cb.Access.Stderr(&cb.Config.Streams.ErrOut)
-			arguments := cb.Values.Sequence(&cb.Config.Arguments, cli.Value.String())
+			resources := cb.Values.Sequence(&cb.Config.Resources, cli.Value.String())
 			cb.Arguments.Form(func(form *cli.ArgumentFormBuilder[setSubjectConfig]) {
-				form.Sequence(arguments, "ARG", cli.Count.ZeroOrMore())
+				form.Sequence(resources, "RESOURCE", cli.Count.ZeroOrMore())
 			})
 
-			allFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.All))
+			all := cb.Values.Bool(&cb.Config.All)
+			allFlag := cb.Flags.ValueFor(all)
 			allFlag = allFlag.Description("Select all resources, in the namespace of the specified resource types")
 			allFlag.Long("all").ImplicitValue(true)
 
@@ -66,11 +99,12 @@ func setSubjectCommand(client cli.Destination[rootConfig, clientConfig]) cli.Com
 			cb.Values.Default(allowMissingTemplateKeysFlag, true)
 			allowMissingTemplateKeysFlag.Long("allow-missing-template-keys").ImplicitValue(true)
 
-			dryRunFlag := cb.Flags.String(&cb.Config.DryRun)
+			dryRun := cb.Values.Value(&cb.Config.DryRun, dryRunValueLanguage)
+			dryRunFlag := cb.Flags.ValueFor(dryRun)
 			dryRunFlag = dryRunFlag.Description("Must be \"none\", \"server\", or \"client\". If client strategy, only print the object that would be sent, without sending it. If server strategy, submit server-side request without persisting the resource.")
-			cb.Values.Default(dryRunFlag, "none")
+			cb.Values.Default(dryRunFlag, util.DryRunNone)
 			dryRunFlagLong := dryRunFlag.Long("dry-run")
-			dryRunFlagLong.ImplicitValue("unchanged")
+			dryRunFlagLong.ImplicitValue(util.DryRunClient)
 
 			fieldManagerFlag := cb.Flags.String(&cb.Config.FieldManager)
 			fieldManagerFlag = fieldManagerFlag.Description("Name of the manager used to track field ownership.")
@@ -89,12 +123,14 @@ func setSubjectCommand(client cli.Destination[rootConfig, clientConfig]) cli.Com
 			groupFlag = groupFlag.Description("Groups to bind to the role")
 			groupFlag.Long("group")
 
-			kustomizeFlag := cb.Flags.String(&cb.Config.Kustomize)
+			kustomize := cb.Values.String(&cb.Config.Kustomize)
+			kustomizeFlag := cb.Flags.ValueFor(kustomize)
 			kustomizeFlag = kustomizeFlag.Description("Process the kustomization directory. This flag can't be used together with -f or -R.")
 			kustomizeFlag.Long("kustomize")
 			kustomizeFlag.Short('k')
 
-			localFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Local))
+			local := cb.Values.Bool(&cb.Config.Local)
+			localFlag := cb.Flags.ValueFor(local)
 			localFlag = localFlag.Description("If true, set subject will NOT contact api-server but run locally.")
 			localFlag.Long("local").ImplicitValue(true)
 
@@ -103,17 +139,19 @@ func setSubjectCommand(client cli.Destination[rootConfig, clientConfig]) cli.Com
 			outputFlag.Long("output")
 			outputFlag.Short('o')
 
-			recursiveFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Recursive))
+			recursive := cb.Values.Bool(&cb.Config.Recursive)
+			recursiveFlag := cb.Flags.ValueFor(recursive)
 			recursiveFlag = recursiveFlag.Description("Process the directory used in -f, --filename recursively. Useful when you want to manage related manifests organized within the same directory.")
 			recursiveFlag.Long("recursive").ImplicitValue(true)
 			recursiveFlag.Short('R').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
 
-			selectorFlag := cb.Flags.String(&cb.Config.Selector)
+			selector := cb.Values.String(&cb.Config.Selector)
+			selectorFlag := cb.Flags.ValueFor(selector)
 			selectorFlag = selectorFlag.Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
 			selectorFlag.Long("selector")
 			selectorFlag.Short('l')
 
-			serviceAccountValue := cb.Values.Sequence(&cb.Config.ServiceAccounts, cli.Value.String())
+			serviceAccountValue := cb.Values.Sequence(&cb.Config.ServiceAccounts, subjectServiceAccountLanguage)
 			serviceAccountFlag := cb.Flags.Sequence(serviceAccountValue)
 			serviceAccountFlag = serviceAccountFlag.Description("Service accounts to bind to the role")
 			serviceAccountFlag.Long("serviceaccount")
@@ -130,6 +168,18 @@ func setSubjectCommand(client cli.Destination[rootConfig, clientConfig]) cli.Com
 			userFlag := cb.Flags.Sequence(userValue)
 			userFlag = userFlag.Description("Usernames to bind to the role")
 			userFlag.Long("user")
+
+			cb.Rule.When(cb.When.Equal(all, true)).Equal(selector, "")
+			cb.Rule.AtMostOne(filenameValue, kustomize)
+			cb.Rule.When(cb.When.Equal(recursive, true)).Forbid(kustomize)
+			cb.Rule.When(cb.When.Equal(local, true)).Forbid(resources)
+			cb.Rule.AtLeastOne(resources, filenameValue).And(kustomize)
+			cb.Rule.AtLeastOne(userValue, groupValue).And(serviceAccountValue)
+			cb.Rule.Check("kubectl-set-subject-local-dry-run", func(_ context.Context, cfg *setSubjectConfig, _ cli.Dependencies) (bool, error) {
+				return !cfg.Local || cfg.DryRun != util.DryRunServer, nil
+			}).
+				DependsOn(local.OptionalDependency()).
+				DependsOn(dryRun.OptionalDependency())
 		},
 		Run: runSetSubject,
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/abstractionsinc/commandment/cli"
 	"k8s.io/cli-runtime/pkg/genericiooptions"
+	"k8s.io/kubectl/pkg/cmd/util"
 )
 
 type applySetLastAppliedConfig struct {
@@ -10,7 +11,7 @@ type applySetLastAppliedConfig struct {
 	Streams                  genericiooptions.IOStreams
 	AllowMissingTemplateKeys bool
 	CreateAnnotation         bool
-	DryRun                   string
+	DryRun                   util.DryRunStrategy
 	Filename                 []string
 	Output                   string
 	ShowManagedFields        bool
@@ -50,14 +51,18 @@ func applySetLastAppliedCommand(client cli.Destination[rootConfig, clientConfig]
 			createAnnotationFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.CreateAnnotation))
 			createAnnotationFlag.Description("Will create 'last-applied-configuration' annotations if current objects doesn't have one").Long("create-annotation").ImplicitValue(true)
 
-			dryRunFlag := cb.Flags.String(&cb.Config.DryRun)
-			dryRunFlag.Description("Must be \"none\", \"server\", or \"client\". If client strategy, only print the object that would be sent, without sending it. If server strategy, submit server-side request without persisting the resource.").Long("dry-run").ImplicitValue("unchanged")
-			cb.Values.Default(dryRunFlag, "none")
+			dryRun := cb.Values.Value(&cb.Config.DryRun, dryRunValueLanguage)
+			dryRunFlag := cb.Flags.ValueFor(dryRun)
+			dryRunFlag.Description("Must be \"none\", \"server\", or \"client\". If client strategy, only print the object that would be sent, without sending it. If server strategy, submit server-side request without persisting the resource.").Long("dry-run").ImplicitValue(util.DryRunClient)
+			cb.Values.Default(dryRun, util.DryRunNone)
 
 			filenameValue := cb.Values.Sequence(&cb.Config.Filename, cli.Value.String())
 			filenameFlag := cb.Flags.Sequence(filenameValue)
 			filenameFlag.DelimitedBy(",").Description("Filename, directory, or URL to files that contains the last-applied-configuration annotations").Long("filename")
 			filenameFlag.Short('f')
+
+			cb.Rule.Require(filenameValue)
+			cb.Rule.ItemCount(filenameValue, cli.Count.OneOrMore())
 
 			outputFlag := cb.Flags.String(&cb.Config.Output)
 			outputFlag.Description("Output format. One of: (json, yaml, kyaml, name, go-template, go-template-file, template, templatefile, jsonpath, jsonpath-as-json, jsonpath-file).").Long("output")

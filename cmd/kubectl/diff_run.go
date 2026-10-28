@@ -55,19 +55,7 @@ func runDiff(ctx context.Context, cfg *diffConfig) error {
 		Kustomize: cfg.Kustomize,
 		Recursive: cfg.Recursive,
 	}
-	if err := filename.RequireFilenameOrKustomize(); err != nil {
-		return err
-	}
-	if cfg.ForceConflicts && !cfg.ServerSide {
-		return fmt.Errorf("--force-conflicts only works with --server-side")
-	}
-
 	factory := cfg.Client.factory()
-	fieldManager := cfg.FieldManager
-	if cfg.ServerSide && !explicitFlagValue(cfg.FieldManagerState) {
-		fieldManager = "kubectl"
-	}
-
 	var openAPIV3Root openapi3.Root
 	if !cfg.ServerSide {
 		openAPIV3Client, err := factory.OpenAPIV3Client()
@@ -154,7 +142,7 @@ func runDiff(ctx context.Context, cfg *diffConfig) error {
 				OpenAPIV3Root:   openAPIV3Root,
 				Force:           force,
 				ServerSideApply: cfg.ServerSide,
-				FieldManager:    fieldManager,
+				FieldManager:    cfg.FieldManager,
 				ForceConflicts:  cfg.ForceConflicts,
 				IOStreams:       cfg.Streams,
 			}

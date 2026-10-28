@@ -2,10 +2,7 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"os"
 
-	"sigs.k8s.io/kustomize/api/konfig"
 	"sigs.k8s.io/kustomize/api/krusty"
 	"sigs.k8s.io/kustomize/api/types"
 	"sigs.k8s.io/kustomize/kustomize/v5/commands/build"
@@ -13,30 +10,17 @@ import (
 )
 
 func runKustomize(_ context.Context, cfg *kustomizeConfig) error {
-	if len(cfg.Arguments) > 1 {
-		return fmt.Errorf("specify one path to %s", konfig.DefaultKustomizationFileName())
-	}
-	path := filesys.SelfDir
-	if len(cfg.Arguments) == 1 {
-		path = cfg.Arguments[0]
+	path := cfg.Directory
+	if path == "" {
+		path = filesys.SelfDir
 	}
 
 	options := krusty.MakeDefaultOptions()
-	switch cfg.LoadRestrictor {
-	case "", types.LoadRestrictionsRootOnly.String():
-		options.LoadRestrictions = types.LoadRestrictionsRootOnly
-	case "none", types.LoadRestrictionsNone.String():
-		options.LoadRestrictions = types.LoadRestrictionsNone
-	default:
-		return fmt.Errorf("illegal flag value --load-restrictor %s; legal values: [%s %s]", cfg.LoadRestrictor, types.LoadRestrictionsRootOnly.String(), types.LoadRestrictionsNone.String())
-	}
-	switch cfg.Reorder {
-	case "", string(krusty.ReorderOptionLegacy):
-		options.Reorder = krusty.ReorderOptionLegacy
-	case string(krusty.ReorderOptionNone):
-		options.Reorder = krusty.ReorderOptionNone
-	default:
-		return fmt.Errorf("illegal flag value --reorder %s; legal values: [%s %s]", cfg.Reorder, krusty.ReorderOptionLegacy, krusty.ReorderOptionNone)
+	options.LoadRestrictions = cfg.LoadRestrictor
+	if flagProvided(cfg.ReorderState) {
+		options.Reorder = cfg.Reorder
+	} else {
+		options.Reorder = krusty.ReorderOptionUnspecified
 	}
 
 	functionOptions := types.FnPluginLoadingOptions{
@@ -57,7 +41,7 @@ func runKustomize(_ context.Context, cfg *kustomizeConfig) error {
 	options.PluginConfig.HelmConfig.ApiVersions = append([]string(nil), cfg.HelmAPIVersions...)
 	options.PluginConfig.HelmConfig.KubeVersion = cfg.HelmKubeVersion
 	options.PluginConfig.HelmConfig.Debug = cfg.HelmDebug
-	options.AddManagedbyLabel = cfg.EnableManagedbyLabel || os.Getenv(konfig.EnableManagedbyLabelEnv) == "on"
+	options.AddManagedbyLabel = cfg.EnableManagedbyLabel || cfg.ManagedbyLabelEnv
 
 	fileSystem := filesys.MakeFsOnDisk()
 	result, err := krusty.MakeKustomizer(options).Run(fileSystem, path)

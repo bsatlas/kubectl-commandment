@@ -1,17 +1,21 @@
 package main
 
 import (
+	"context"
+
 	"github.com/abstractionsinc/commandment/cli"
 	"k8s.io/cli-runtime/pkg/genericiooptions"
+	"k8s.io/kubectl/pkg/cmd/util"
 )
 
 type setServiceAccountConfig struct {
 	Client                   clientConfig
 	Streams                  genericiooptions.IOStreams
-	Arguments                []string
+	Resources                []string
+	ServiceAccount           string
 	All                      bool
 	AllowMissingTemplateKeys bool
-	DryRun                   string
+	DryRun                   util.DryRunStrategy
 	FieldManager             string
 	Filename                 []string
 	Kustomize                string
@@ -46,9 +50,11 @@ func setServiceAccountCommand(client cli.Destination[rootConfig, clientConfig]) 
 			cb.Access.Stdin(&cb.Config.Streams.In)
 			cb.Access.Stdout(&cb.Config.Streams.Out)
 			cb.Access.Stderr(&cb.Config.Streams.ErrOut)
-			arguments := cb.Values.Sequence(&cb.Config.Arguments, cli.Value.String())
+			resources := cb.Values.Sequence(&cb.Config.Resources, cli.Value.String())
+			serviceAccount := cb.Values.String(&cb.Config.ServiceAccount)
 			cb.Arguments.Form(func(form *cli.ArgumentFormBuilder[setServiceAccountConfig]) {
-				form.Sequence(arguments, "ARG", cli.Count.ZeroOrMore())
+				form.Sequence(resources, "RESOURCE", cli.Count.ZeroOrMore()).Minimal()
+				form.ValueFor(serviceAccount, "SERVICE_ACCOUNT")
 			})
 
 			allFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.All))
@@ -60,11 +66,12 @@ func setServiceAccountCommand(client cli.Destination[rootConfig, clientConfig]) 
 			cb.Values.Default(allowMissingTemplateKeysFlag, true)
 			allowMissingTemplateKeysFlag.Long("allow-missing-template-keys").ImplicitValue(true)
 
-			dryRunFlag := cb.Flags.String(&cb.Config.DryRun)
+			dryRun := cb.Values.Value(&cb.Config.DryRun, dryRunValueLanguage)
+			dryRunFlag := cb.Flags.ValueFor(dryRun)
 			dryRunFlag = dryRunFlag.Description("Must be \"none\", \"server\", or \"client\". If client strategy, only print the object that would be sent, without sending it. If server strategy, submit server-side request without persisting the resource.")
-			cb.Values.Default(dryRunFlag, "none")
+			cb.Values.Default(dryRunFlag, util.DryRunNone)
 			dryRunFlagLong := dryRunFlag.Long("dry-run")
-			dryRunFlagLong.ImplicitValue("unchanged")
+			dryRunFlagLong.ImplicitValue(util.DryRunClient)
 
 			fieldManagerFlag := cb.Flags.String(&cb.Config.FieldManager)
 			fieldManagerFlag = fieldManagerFlag.Description("Name of the manager used to track field ownership.")
@@ -78,12 +85,14 @@ func setServiceAccountCommand(client cli.Destination[rootConfig, clientConfig]) 
 			filenameFlag.Long("filename")
 			filenameFlag.Short('f')
 
-			kustomizeFlag := cb.Flags.String(&cb.Config.Kustomize)
+			kustomize := cb.Values.String(&cb.Config.Kustomize)
+			kustomizeFlag := cb.Flags.ValueFor(kustomize)
 			kustomizeFlag = kustomizeFlag.Description("Process the kustomization directory. This flag can't be used together with -f or -R.")
 			kustomizeFlag.Long("kustomize")
 			kustomizeFlag.Short('k')
 
-			localFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Local))
+			local := cb.Values.Bool(&cb.Config.Local)
+			localFlag := cb.Flags.ValueFor(local)
 			localFlag = localFlag.Description("If true, set serviceaccount will NOT contact api-server but run locally.")
 			localFlag.Long("local").ImplicitValue(true)
 
@@ -97,7 +106,8 @@ func setServiceAccountCommand(client cli.Destination[rootConfig, clientConfig]) 
 			recordFlag = recordFlag.Hidden().Release(preexistingDeprecation("--record will be removed in the future"))
 			recordFlag.Long("record").ImplicitValue(true)
 
-			recursiveFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Recursive))
+			recursive := cb.Values.Bool(&cb.Config.Recursive)
+			recursiveFlag := cb.Flags.ValueFor(recursive)
 			recursiveFlag = recursiveFlag.Description("Process the directory used in -f, --filename recursively. Useful when you want to manage related manifests organized within the same directory.")
 			recursiveFlag.Long("recursive").ImplicitValue(true)
 			recursiveFlag.Short('R').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
@@ -109,6 +119,15 @@ func setServiceAccountCommand(client cli.Destination[rootConfig, clientConfig]) 
 			templateFlag := cb.Flags.String(&cb.Config.Template)
 			templateFlag = templateFlag.Description("Template string or path to template file to use when -o=go-template, -o=go-template-file. The template format is golang templates [http://golang.org/pkg/text/template/#pkg-overview].")
 			templateFlag.Long("template")
+
+			cb.Rule.AtMostOne(filenameValue, kustomize)
+			cb.Rule.When(cb.When.Equal(recursive, true)).Forbid(kustomize)
+			cb.Rule.AtLeastOne(resources, filenameValue).And(kustomize)
+			cb.Rule.Check("kubectl-set-serviceaccount-local-dry-run", func(_ context.Context, cfg *setServiceAccountConfig, _ cli.Dependencies) (bool, error) {
+				return !cfg.Local || cfg.DryRun != util.DryRunServer, nil
+			}).
+				DependsOn(local.OptionalDependency()).
+				DependsOn(dryRun.OptionalDependency())
 		},
 		Run: runSetServiceAccount,
 	}

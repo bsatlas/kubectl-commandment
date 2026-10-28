@@ -58,7 +58,8 @@ func applyViewLastAppliedCommand(client cli.Destination[rootConfig, clientConfig
 			filenameFlag.DelimitedBy(",").Description("Filename, directory, or URL to files that contains the last-applied-configuration annotations").Long("filename")
 			filenameFlag.Short('f')
 
-			kustomizeFlag := cb.Flags.String(&cb.Config.Kustomize)
+			kustomize := cb.Values.String(&cb.Config.Kustomize)
+			kustomizeFlag := cb.Flags.ValueFor(kustomize)
 			kustomizeFlag.Description("Process the kustomization directory. This flag can't be used together with -f or -R.").Long("kustomize")
 			kustomizeFlag.Short('k')
 
@@ -66,14 +67,20 @@ func applyViewLastAppliedCommand(client cli.Destination[rootConfig, clientConfig
 			outputFlag.Description("Output format. Must be one of (yaml, json)").Long("output")
 			outputFlag.Short('o')
 			cb.Values.Default(outputFlag, "yaml")
+			cb.Rule.In(outputFlag, "yaml", "json")
 
-			recursiveFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Recursive))
+			recursive := cb.Values.Bool(&cb.Config.Recursive)
+			recursiveFlag := cb.Flags.ValueFor(recursive)
 			recursiveFlag.Description("Process the directory used in -f, --filename recursively. Useful when you want to manage related manifests organized within the same directory.").Long("recursive").ImplicitValue(true)
 			recursiveFlag.Short('R').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
 
 			selectorFlag := cb.Flags.String(&cb.Config.Selector)
 			selectorFlag.Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.").Long("selector")
 			selectorFlag.Short('l')
+
+			cb.Rule.AtMostOne(filenameValue, kustomize)
+			cb.Rule.When(cb.When.Equal(recursive, true)).Forbid(kustomize)
+			cb.Rule.AtLeastOne(arguments, filenameValue).And(kustomize)
 		},
 		Run: runApplyViewLastApplied,
 	}

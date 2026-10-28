@@ -19,37 +19,8 @@ import (
 )
 
 func runSetImage(_ context.Context, cfg *setImageConfig) error {
-	strategy, err := dryRunStrategy(cfg.DryRun)
-	if err != nil {
-		return err
-	}
-	if cfg.All && cfg.Selector != "" {
-		return fmt.Errorf("cannot set --all and --selector at the same time")
-	}
-	if cfg.Local && strategy == util.DryRunServer {
-		return fmt.Errorf("cannot specify --local and --dry-run=server - did you mean --dry-run=client?")
-	}
-
-	resources, imageArgs, err := util.GetResourcesAndPairs(cfg.Arguments, "image")
-	if err != nil {
-		return err
-	}
-	images, _, err := util.ParsePairs(imageArgs, "image", false)
-	if err != nil {
-		return err
-	}
-	if len(resources) < 1 && len(cfg.Filename) == 0 && cfg.Kustomize == "" {
-		return fmt.Errorf("one or more resources must be specified as <resource> <name> or <resource>/<name>")
-	}
-	if len(images) < 1 {
-		return fmt.Errorf("at least one image update is required")
-	}
-	if len(images) > 1 {
-		if _, ok := images["*"]; ok {
-			return fmt.Errorf("all containers are already specified by *, but saw more than one container_name=container_image pairs")
-		}
-	}
-
+	resources, images := splitImageArguments(cfg.Arguments)
+	strategy := cfg.DryRun
 	factory := cfg.Client.factory()
 	namespace, enforceNamespace, err := factory.ToRawKubeConfigLoader().Namespace()
 	if err != nil && !(cfg.Local && clientcmd.IsEmptyConfig(err)) {
@@ -69,8 +40,6 @@ func runSetImage(_ context.Context, cfg *setImageConfig) error {
 		Flatten()
 	if !cfg.Local {
 		builder = builder.LabelSelectorParam(cfg.Selector).ResourceTypeOrNameArgs(cfg.All, resources...).Latest()
-	} else if len(resources) > 0 {
-		return resource.LocalResourceError
 	}
 	infos, err := builder.Do().Infos()
 	if err != nil {

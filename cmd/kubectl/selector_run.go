@@ -10,7 +10,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/cli-runtime/pkg/resource"
-	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
 	"k8s.io/kubectl/pkg/cmd/set"
 	"k8s.io/kubectl/pkg/cmd/util"
@@ -18,25 +17,10 @@ import (
 )
 
 func runSetSelector(_ context.Context, cfg *setSelectorConfig) error {
-	if len(cfg.Arguments) == 0 {
-		return fmt.Errorf("one selector is required")
-	}
-	resources := cfg.Arguments[:len(cfg.Arguments)-1]
-	selector, err := parseServiceSelector(cfg.Arguments[len(cfg.Arguments)-1])
-	if err != nil {
-		return err
-	}
-	strategy, err := dryRunStrategy(cfg.DryRun)
-	if err != nil {
-		return err
-	}
-	if cfg.Local && strategy == util.DryRunServer {
-		return fmt.Errorf("cannot specify --local and --dry-run=server - did you mean --dry-run=client?")
-	}
-
+	strategy := cfg.DryRun
 	factory := cfg.Client.factory()
 	namespace, enforceNamespace, err := factory.ToRawKubeConfigLoader().Namespace()
-	if err != nil && !(cfg.Local && clientcmd.IsEmptyConfig(err)) {
+	if err != nil {
 		return err
 	}
 	filename := resource.FilenameOptions{
@@ -51,9 +35,7 @@ func runSetSelector(_ context.Context, cfg *setSelectorConfig) error {
 		FilenameParam(enforceNamespace, &filename).
 		Flatten()
 	if !cfg.Local {
-		builder = builder.ResourceTypeOrNameArgs(cfg.All, resources...).Latest()
-	} else if len(resources) > 0 {
-		return resource.LocalResourceError
+		builder = builder.ResourceTypeOrNameArgs(cfg.All, cfg.Resources...).Latest()
 	}
 	result := builder.Do()
 	if err := result.Err(); err != nil {
@@ -104,8 +86,11 @@ func runSetSelector(_ context.Context, cfg *setSelectorConfig) error {
 			if !ok {
 				return nil, fmt.Errorf("setting a selector is only supported for Services")
 			}
-			service.Spec.Selector = make(map[string]string, len(selector))
-			for key, value := range selector {
+			if len(cfg.Selector.MatchExpressions) > 0 {
+				return nil, fmt.Errorf("match expression %v not supported on this object", cfg.Selector.MatchExpressions)
+			}
+			service.Spec.Selector = make(map[string]string, len(cfg.Selector.MatchLabels))
+			for key, value := range cfg.Selector.MatchLabels {
 				service.Spec.Selector[key] = value
 			}
 			if err := recorder.Record(object); err != nil {

@@ -1,21 +1,26 @@
 package main
 
 import (
+	"context"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/abstractionsinc/commandment/cli"
 	"k8s.io/cli-runtime/pkg/genericiooptions"
+	"k8s.io/kubectl/pkg/cmd/util"
 )
 
 type applyConfig struct {
 	Client                   clientConfig
 	Streams                  genericiooptions.IOStreams
 	All                      bool
+	ApplySet                 string
+	ApplySetEnabled          bool
 	AllowMissingTemplateKeys bool
 	Cascade                  string
-	DryRun                   string
+	DryRun                   util.DryRunStrategy
 	FieldManager             string
-	FieldManagerState        cli.OptionalValue[cli.ValueState]
 	Filename                 []string
 	Force                    bool
 	ForceConflicts           bool
@@ -36,6 +41,15 @@ type applyConfig struct {
 	Timeout                  time.Duration
 	Validate                 string
 	Wait                     bool
+}
+
+var applySetFeatureLanguage = cli.ValueCodec[bool]{
+	Name: "kubectl-applyset-feature",
+	Parse: func(value string) (bool, error) {
+		return strings.EqualFold(value, "true"), nil
+	},
+	Format:   strconv.FormatBool,
+	Snapshot: cli.Value.Assign[bool](),
 }
 
 func applyCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[applyConfig] {
@@ -77,9 +91,30 @@ func applyCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[
 			cb.Access.Stdout(&cb.Config.Streams.Out)
 			cb.Access.Stderr(&cb.Config.Streams.ErrOut)
 
-			allFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.All))
+			all := cb.Values.Bool(&cb.Config.All)
+			dryRun := cb.Values.Value(&cb.Config.DryRun, dryRunValueLanguage)
+			fieldManager := cb.Values.String(&cb.Config.FieldManager)
+			filename := cb.Values.Sequence(&cb.Config.Filename, cli.Value.String())
+			force := cb.Values.Bool(&cb.Config.Force)
+			forceConflicts := cb.Values.Bool(&cb.Config.ForceConflicts)
+			kustomize := cb.Values.String(&cb.Config.Kustomize)
+			prune := cb.Values.Bool(&cb.Config.Prune)
+			recursive := cb.Values.Bool(&cb.Config.Recursive)
+			selector := cb.Values.String(&cb.Config.Selector)
+			serverSide := cb.Values.Bool(&cb.Config.ServerSide)
+			subresource := cb.Values.String(&cb.Config.Subresource)
+
+			allFlag := cb.Flags.ValueFor(all)
 			allFlag = allFlag.Description("Select all resources in the namespace of the specified resource types.")
 			allFlag.Long("all").ImplicitValue(true)
+
+			applySet := cb.Values.String(&cb.Config.ApplySet)
+			applySetEnabled := cb.Values.Value(&cb.Config.ApplySetEnabled, applySetFeatureLanguage)
+			cb.Values.Environment(applySetEnabled, string(util.ApplySet))
+			applySetFlag := cb.Flags.ValueFor(applySet)
+			applySetFlag = applySetFlag.Description("[alpha] The name of the ApplySet that tracks which resources are being managed, for the purposes of determining what to prune. Live resources that are part of the ApplySet but have been removed from the provided configs will be deleted. Format: [RESOURCE][.GROUP]/NAME. A Secret will be used if no resource or group is specified.")
+			applySetFlag.AvailableWhen(cb.When.Equal(applySetEnabled, true))
+			applySetFlag.Long("applyset")
 
 			allowMissingTemplateKeysFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.AllowMissingTemplateKeys))
 			allowMissingTemplateKeysFlag = allowMissingTemplateKeysFlag.Description("If true, ignore any errors in templates when a field or map key is missing in the template. Only applies to golang and jsonpath output formats.")
@@ -92,30 +127,39 @@ func applyCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[
 			cascadeFlagLong := cascadeFlag.Long("cascade")
 			cascadeFlagLong.ImplicitValue("background")
 
-			dryRunFlag := cb.Flags.String(&cb.Config.DryRun)
+			dryRunFlag := cb.Flags.ValueFor(dryRun)
 			dryRunFlag = dryRunFlag.Description("Must be \"none\", \"server\", or \"client\". If client strategy, only print the object that would be sent, without sending it. If server strategy, submit server-side request without persisting the resource.")
-			cb.Values.Default(dryRunFlag, "none")
+			cb.Values.Default(dryRunFlag, util.DryRunNone)
 			dryRunFlagLong := dryRunFlag.Long("dry-run")
-			dryRunFlagLong.ImplicitValue("unchanged")
+			dryRunFlagLong.ImplicitValue(util.DryRunClient)
 
-			fieldManagerFlag := cb.Flags.String(&cb.Config.FieldManager)
+			cb.Values.OptionalComputedDefault(
+				fieldManager,
+				cli.Value.OptionallyComputedBy(func(_ context.Context, _ *applyConfig, dependencies cli.Dependencies) (cli.ValueContribution[string], error) {
+					server, _ := dependencies.Get(serverSide)
+					if server {
+						return cli.ContributeValue("kubectl"), nil
+					}
+					return cli.OmitValue[string](), nil
+				}).From(serverSide.OptionalDependency()),
+			)
+			cb.Values.Default(fieldManager, "kubectl-client-side-apply")
+			fieldManagerFlag := cb.Flags.ValueFor(fieldManager)
 			fieldManagerFlag = fieldManagerFlag.Description("Name of the manager used to track field ownership.")
-			cb.Values.Default(fieldManagerFlag, "kubectl-client-side-apply")
 			fieldManagerFlag.Long("field-manager")
-			cb.Access.ValueState(fieldManagerFlag, &cb.Config.FieldManagerState)
 
-			filenameValue := cb.Values.Sequence(&cb.Config.Filename, cli.Value.String())
+			filenameValue := filename
 			filenameFlag := cb.Flags.Sequence(filenameValue)
 			filenameFlag = filenameFlag.DelimitedBy(",")
 			filenameFlag = filenameFlag.Description("The files, directories or URLs that contain the configurations to apply.")
 			filenameFlag.Long("filename")
 			filenameFlag.Short('f')
 
-			forceFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Force))
+			forceFlag := cb.Flags.ValueFor(force)
 			forceFlag = forceFlag.Description("If true, immediately remove resources from API and bypass graceful deletion. Note that immediate deletion of some resources may result in inconsistency or data loss and requires confirmation.")
 			forceFlag.Long("force").ImplicitValue(true)
 
-			forceConflictsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ForceConflicts))
+			forceConflictsFlag := cb.Flags.ValueFor(forceConflicts)
 			forceConflictsFlag = forceConflictsFlag.Description("If true, server-side apply will force the changes against conflicts.")
 			forceConflictsFlag.Long("force-conflicts").ImplicitValue(true)
 
@@ -124,7 +168,7 @@ func applyCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[
 			cb.Values.Default(gracePeriodFlag, -1)
 			gracePeriodFlag.Long("grace-period")
 
-			kustomizeFlag := cb.Flags.String(&cb.Config.Kustomize)
+			kustomizeFlag := cb.Flags.ValueFor(kustomize)
 			kustomizeFlag = kustomizeFlag.Description("Process a kustomization directory. This flag can't be used together with -f or -R.")
 			kustomizeFlag.Long("kustomize")
 			kustomizeFlag.Short('k')
@@ -144,7 +188,7 @@ func applyCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[
 			cb.Values.Default(overwriteFlag, true)
 			overwriteFlag.Long("overwrite").ImplicitValue(true)
 
-			pruneFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Prune))
+			pruneFlag := cb.Flags.ValueFor(prune)
 			pruneFlag = pruneFlag.Description("Automatically delete resource objects, that do not appear in the configs and are created by either apply or create --save-config. Should be used with either -l or --all.")
 			pruneFlag.Long("prune").ImplicitValue(true)
 
@@ -158,17 +202,17 @@ func applyCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[
 			recordFlag = recordFlag.Hidden().Release(preexistingDeprecation("--record will be removed in the future"))
 			recordFlag.Long("record").ImplicitValue(true)
 
-			recursiveFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Recursive))
+			recursiveFlag := cb.Flags.ValueFor(recursive)
 			recursiveFlag = recursiveFlag.Description("Process the directory used in -f, --filename recursively. Useful when you want to manage related manifests organized within the same directory.")
 			recursiveFlag.Long("recursive").ImplicitValue(true)
 			recursiveFlag.Short('R').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
 
-			selectorFlag := cb.Flags.String(&cb.Config.Selector)
+			selectorFlag := cb.Flags.ValueFor(selector)
 			selectorFlag = selectorFlag.Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
 			selectorFlag.Long("selector")
 			selectorFlag.Short('l')
 
-			serverSideFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ServerSide))
+			serverSideFlag := cb.Flags.ValueFor(serverSide)
 			serverSideFlag = serverSideFlag.Description("If true, apply runs in the server instead of the client.")
 			serverSideFlag.Long("server-side").ImplicitValue(true)
 
@@ -176,7 +220,7 @@ func applyCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[
 			showManagedFieldsFlag = showManagedFieldsFlag.Description("If true, keep the managedFields when printing objects in JSON or YAML format.")
 			showManagedFieldsFlag.Long("show-managed-fields").ImplicitValue(true)
 
-			subresourceFlag := cb.Flags.String(&cb.Config.Subresource)
+			subresourceFlag := cb.Flags.ValueFor(subresource)
 			subresourceFlag = subresourceFlag.Description("If specified, apply will operate on the subresource of the requested object.  Only allowed when using --server-side.")
 			subresourceFlag.CompleteBy(literalCompleter[applyConfig](
 				cli.CompletionCandidateValue,
@@ -201,6 +245,37 @@ func applyCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[
 			waitFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Wait))
 			waitFlag = waitFlag.Description("If true, wait for resources to be gone before returning. This waits for finalizers.")
 			waitFlag.Long("wait").ImplicitValue(true)
+
+			cb.Rule.AtMostOne(filename, kustomize)
+			cb.Rule.When(cb.When.Equal(recursive, true)).Forbid(kustomize)
+			cb.Rule.When(cb.When.Equal(forceConflicts, true)).Require(serverSide)
+			cb.Rule.When(cb.When.Equal(forceConflicts, true)).Equal(serverSide, true)
+			cb.Rule.When(cb.When.Equal(serverSide, true)).Equal(force, false)
+			cb.Rule.When(cb.When.Equal(all, true)).Equal(selector, "")
+			cb.Rule.When(cb.When.NotEqual(subresource, "")).Require(serverSide)
+			cb.Rule.When(cb.When.NotEqual(subresource, "")).Equal(serverSide, true)
+			cb.Rule.When(cb.When.Equal(dryRun, util.DryRunClient)).Forbid(serverSide)
+			cb.Rule.When(cb.When.Equal(dryRun, util.DryRunServer)).Forbid(force)
+			cb.Rule.When(cb.When.Equal(prune, true)).Equal(force, false)
+			cb.Rule.Check("kubectl-apply-prune-server-side", func(_ context.Context, cfg *applyConfig, _ cli.Dependencies) (bool, error) {
+				return !cfg.Prune || cfg.ApplySet != "" || !cfg.ServerSide, nil
+			}).
+				DependsOn(prune.OptionalDependency()).
+				DependsOn(applySet.OptionalDependency()).
+				DependsOn(serverSide.OptionalDependency())
+			cb.Rule.Check("kubectl-apply-prune-selection", func(_ context.Context, cfg *applyConfig, _ cli.Dependencies) (bool, error) {
+				return !cfg.Prune || cfg.ApplySet != "" || cfg.All || cfg.Selector != "", nil
+			}).
+				DependsOn(prune.OptionalDependency()).
+				DependsOn(applySet.OptionalDependency()).
+				DependsOn(all.OptionalDependency()).
+				DependsOn(selector.OptionalDependency())
+			selected := cb.When.NotEqual(applySet, "")
+			cb.Rule.When(selected).Require(prune)
+			cb.Rule.When(selected).Equal(prune, true)
+			cb.Rule.When(selected).Equal(all, false)
+			cb.Rule.When(selected).Equal(selector, "")
+			cb.Rule.When(selected).Forbid(pruneAllowlistValue)
 
 			editLastApplied := applyEditLastAppliedCommand(client)
 			cb.Subcommands.Command(editLastApplied)

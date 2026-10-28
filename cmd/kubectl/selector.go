@@ -1,17 +1,23 @@
 package main
 
 import (
+	"context"
+	"fmt"
+
 	"github.com/abstractionsinc/commandment/cli"
+	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/cli-runtime/pkg/genericiooptions"
+	"k8s.io/kubectl/pkg/cmd/util"
 )
 
 type setSelectorConfig struct {
 	Client                   clientConfig
 	Streams                  genericiooptions.IOStreams
-	Arguments                []string
+	Resources                []string
+	Selector                 v1.LabelSelector
 	All                      bool
 	AllowMissingTemplateKeys bool
-	DryRun                   string
+	DryRun                   util.DryRunStrategy
 	FieldManager             string
 	Filename                 []string
 	Local                    bool
@@ -41,9 +47,11 @@ func setSelectorCommand(client cli.Destination[rootConfig, clientConfig]) cli.Co
 			cb.Access.Stdin(&cb.Config.Streams.In)
 			cb.Access.Stdout(&cb.Config.Streams.Out)
 			cb.Access.Stderr(&cb.Config.Streams.ErrOut)
-			arguments := cb.Values.Sequence(&cb.Config.Arguments, cli.Value.String())
+			resources := cb.Values.Sequence(&cb.Config.Resources, cli.Value.String())
+			selector := cb.Values.Value(&cb.Config.Selector, selectorLanguage)
 			cb.Arguments.Form(func(form *cli.ArgumentFormBuilder[setSelectorConfig]) {
-				form.Sequence(arguments, "ARG", cli.Count.ZeroOrMore())
+				form.Sequence(resources, "RESOURCE", cli.Count.ZeroOrMore()).Minimal()
+				form.ValueFor(selector, "SELECTOR")
 			})
 
 			allFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.All))
@@ -55,11 +63,12 @@ func setSelectorCommand(client cli.Destination[rootConfig, clientConfig]) cli.Co
 			cb.Values.Default(allowMissingTemplateKeysFlag, true)
 			allowMissingTemplateKeysFlag.Long("allow-missing-template-keys").ImplicitValue(true)
 
-			dryRunFlag := cb.Flags.String(&cb.Config.DryRun)
+			dryRun := cb.Values.Value(&cb.Config.DryRun, dryRunValueLanguage)
+			dryRunFlag := cb.Flags.ValueFor(dryRun)
 			dryRunFlag = dryRunFlag.Description("Must be \"none\", \"server\", or \"client\". If client strategy, only print the object that would be sent, without sending it. If server strategy, submit server-side request without persisting the resource.")
-			cb.Values.Default(dryRunFlag, "none")
+			cb.Values.Default(dryRunFlag, util.DryRunNone)
 			dryRunFlagLong := dryRunFlag.Long("dry-run")
-			dryRunFlagLong.ImplicitValue("unchanged")
+			dryRunFlagLong.ImplicitValue(util.DryRunClient)
 
 			fieldManagerFlag := cb.Flags.String(&cb.Config.FieldManager)
 			fieldManagerFlag = fieldManagerFlag.Description("Name of the manager used to track field ownership.")
@@ -73,7 +82,8 @@ func setSelectorCommand(client cli.Destination[rootConfig, clientConfig]) cli.Co
 			filenameFlag.Long("filename")
 			filenameFlag.Short('f')
 
-			localFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Local))
+			local := cb.Values.Bool(&cb.Config.Local)
+			localFlag := cb.Flags.ValueFor(local)
 			localFlag = localFlag.Description("If true, annotation will NOT contact api-server but run locally.")
 			localFlag.Long("local").ImplicitValue(true)
 
@@ -104,8 +114,37 @@ func setSelectorCommand(client cli.Destination[rootConfig, clientConfig]) cli.Co
 			templateFlag := cb.Flags.String(&cb.Config.Template)
 			templateFlag = templateFlag.Description("Template string or path to template file to use when -o=go-template, -o=go-template-file. The template format is golang templates [http://golang.org/pkg/text/template/#pkg-overview].")
 			templateFlag.Long("template")
+
+			cb.Rule.When(cb.When.Equal(local, true)).Forbid(resources)
+			cb.Rule.AtLeastOne(resources, filenameValue)
+			cb.Rule.Check("kubectl-set-selector-local-dry-run", func(_ context.Context, cfg *setSelectorConfig, _ cli.Dependencies) (bool, error) {
+				return !cfg.Local || cfg.DryRun != util.DryRunServer, nil
+			}).
+				DependsOn(local.OptionalDependency()).
+				DependsOn(dryRun.OptionalDependency())
 		},
 		Run: runSetSelector,
 	}
 	return cmd
+}
+
+var selectorLanguage = cli.ValueCodec[v1.LabelSelector]{
+	Name: "kubectl-label-selector",
+	Parse: func(value string) (v1.LabelSelector, error) {
+		selector, err := v1.ParseToLabelSelector(value)
+		if err != nil {
+			return v1.LabelSelector{}, cli.Rejection.Message(
+				"selector",
+				fmt.Sprintf("invalid selector %q: %v", value, err),
+				cli.Rejection.At(0, 0, len(value)),
+			)
+		}
+		return *selector, nil
+	},
+	Format: func(value v1.LabelSelector) string {
+		return v1.FormatLabelSelector(&value)
+	},
+	Snapshot: func(value v1.LabelSelector) v1.LabelSelector {
+		return *value.DeepCopy()
+	},
 }
