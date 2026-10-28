@@ -17,6 +17,7 @@ const certificateConditionConflictRetries = 10
 type certificateConditionChange struct {
 	forbidden v1.RequestConditionType
 	condition v1.RequestConditionType
+	operation string
 	reason    string
 	message   string
 }
@@ -25,6 +26,7 @@ func runCertificateApprove(ctx context.Context, cfg *certificateConditionConfig)
 	change := certificateConditionChange{
 		forbidden: v1.CertificateDenied,
 		condition: v1.CertificateApproved,
+		operation: "approved",
 		reason:    "KubectlApprove",
 		message:   "This CSR was approved by kubectl certificate approve.",
 	}
@@ -35,6 +37,7 @@ func runCertificateDeny(ctx context.Context, cfg *certificateConditionConfig) er
 	change := certificateConditionChange{
 		forbidden: v1.CertificateApproved,
 		condition: v1.CertificateDenied,
+		operation: "denied",
 		reason:    "KubectlDeny",
 		message:   "This CSR was denied by kubectl certificate deny.",
 	}
@@ -42,6 +45,13 @@ func runCertificateDeny(ctx context.Context, cfg *certificateConditionConfig) er
 }
 
 func modifyCertificateCondition(ctx context.Context, cfg *certificateConditionConfig, change certificateConditionChange) error {
+	printFlags := genericclioptions.NewPrintFlags(change.operation).WithTypeSetter(scheme.Scheme)
+	configurePrintFlags(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
+	printer, err := printFlags.ToPrinter()
+	if err != nil {
+		return err
+	}
+
 	factory := cfg.Client.factory()
 	clientset, err := factory.KubernetesClientSet()
 	if err != nil {
@@ -51,16 +61,6 @@ func modifyCertificateCondition(ctx context.Context, cfg *certificateConditionCo
 		Filenames: cfg.Filename,
 		Kustomize: cfg.Kustomize,
 		Recursive: cfg.Recursive,
-	}
-	operation := "denied"
-	if change.condition == v1.CertificateApproved {
-		operation = "approved"
-	}
-	printFlags := genericclioptions.NewPrintFlags(operation).WithTypeSetter(scheme.Scheme)
-	configurePrintFlags(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
-	printer, err := printFlags.ToPrinter()
-	if err != nil {
-		return err
 	}
 
 	var found int
@@ -87,7 +87,7 @@ func modifyCertificateCondition(ctx context.Context, cfg *certificateConditionCo
 			}
 			request, err := clientset.CertificatesV1().CertificateSigningRequests().Get(ctx, object.GetName(), getOptions())
 			if errors.IsNotFound(err) {
-				return fmt.Errorf("could not find v1 version of %s: %v", object.GetName(), err)
+				return fmt.Errorf("could not find v1 version of %s: %w", object.GetName(), err)
 			}
 			if err != nil {
 				return err
@@ -114,7 +114,7 @@ func modifyCertificateCondition(ctx context.Context, cfg *certificateConditionCo
 		return printer.PrintObj(info.Object, cfg.Stdout)
 	})
 	if found == 0 && err == nil {
-		_, _ = fmt.Fprintln(cfg.Stdout, "No resources found")
+		_, err = fmt.Fprintln(cfg.Stdout, "No resources found")
 	}
 	return err
 }
