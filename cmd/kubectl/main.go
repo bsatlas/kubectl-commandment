@@ -4,13 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
-
-	"github.com/abstractionsinc/kubectl-commandment/internal/kubectl"
 )
 
 func main() {
-	plugins := kubectl.DiscoverPluginCatalog(os.Getenv("PATH"))
-	app, err := kubectl.Application(plugins)
+	plugins := discoverPluginCatalog(os.Getenv("PATH"))
+	app, err := application(plugins)
 	if err == nil {
 		err = app.RunFromProcess(context.Background())
 	}

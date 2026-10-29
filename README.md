@@ -37,10 +37,10 @@ The migrated frontend includes the root/global kubectl configuration surface and
 The frontend intentionally uses ordinary Go source rather than mirroring the command tree as packages:
 
 - `cmd/kubectl/main.go` owns process adaptation only;
-- `internal/kubectl/cli.go` owns the production application-construction boundary, root definition, global semantic values, and visible top-level staging;
+- `cmd/kubectl/kubectl.go` owns the production application-construction boundary, root definition, global semantic values, and visible top-level staging;
 - parent command files visibly stage their static children;
 - command declarations keep Commandment grammar, values, policy, completion, and access relationships visible;
-- permanent frontend tests live beside the frontend owner as external `kubectl_test` consumers and observe the production application boundary rather than private implementation state;
+- permanent frontend tests live beside their frontend owners in `cmd/kubectl` and observe the compiled application boundary rather than private implementation decomposition;
 - substantial Kubernetes execution behavior lives in semantically named `*_run.go` or operation files in the same package;
 - command configuration owns admitted CLI semantics, while Kubernetes clients and services remain ordinary Go dependencies;
 - functions are used where they bind real lifetime state, such as callback-scoped Commandment destinations; static definitions otherwise remain values;
