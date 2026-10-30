@@ -65,18 +65,21 @@ func rolloutUndoCommand(client cli.Destination[rootConfig, clientConfig]) cli.Co
 				&cb.Config.ShowManagedFields,
 			)
 
-			dryRun := cb.Values.Value(&cb.Config.DryRun, dryRunValueLanguage)
-			cb.Values.Default(dryRun, util.DryRunNone)
-			cb.Flags.ValueFor(dryRun).
+			dryRunFlag := cb.Flags.Value(&cb.Config.DryRun, dryRunValueLanguage)
+			cb.Values.ResolveWith(dryRunFlag, cli.Value.KeepLast())
+			cb.Values.Default(dryRunFlag, util.DryRunNone)
+			dryRunFlag.
 				Description("Must be \"none\", \"server\", or \"client\". If client strategy, only print the object that would be sent, without sending it. If server strategy, submit server-side request without persisting the resource.").
 				Long("dry-run").
 				ImplicitValue(util.DryRunClient)
 
 			selectorFlag := cb.Flags.String(&cb.Config.Selector).Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
+			cb.Values.ResolveWith(selectorFlag, cli.Value.KeepLast())
 			selectorFlag.Long("selector")
 			selectorFlag.Short('l').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
 			toRevisionFlag := cb.Flags.Value(&cb.Config.ToRevision, int64Language()).Description("The revision to rollback to. Default to 0 (last revision).")
+			cb.Values.ResolveWith(toRevisionFlag, cli.Value.KeepLast())
 			toRevisionFlag.Long("to-revision")
 
 			requireResourceOrFilenameSource(cb, resources, files)

@@ -5,7 +5,7 @@ import (
 	"k8s.io/cli-runtime/pkg/genericiooptions"
 )
 
-type rolloutPauseConfig struct {
+type rolloutResumeConfig struct {
 	Client                   clientConfig
 	Streams                  genericiooptions.IOStreams
 	Resources                resourceArguments
@@ -19,20 +19,20 @@ type rolloutPauseConfig struct {
 	Template                 string
 }
 
-func rolloutPauseCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[rolloutPauseConfig] {
-	cmd := cli.Command[rolloutPauseConfig]{
-		Name: "pause",
+func rolloutResumeCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[rolloutResumeConfig] {
+	cmd := cli.Command[rolloutResumeConfig]{
+		Name: "resume",
 		Description: cli.Description{
-			Short: "Mark the provided resource as paused",
-			Long:  "Mark the provided resource as paused.\n\nPaused resources will not be reconciled by a controller. Use \"kubectl rollout resume\" to resume a paused resource. Currently only deployments support being paused.",
+			Short: "Resume a paused resource",
+			Long:  "Resume a paused resource.\n\nPaused resources will not be reconciled by a controller. By resuming a resource, we allow it to be reconciled again. Currently only deployments support being resumed.",
 		},
 		Examples: []cli.Example{
 			{
-				Description: "Mark the nginx deployment as paused\nAny current state of the deployment will continue its function; new updates\nto the deployment will not have an effect as long as the deployment is paused",
-				CommandLine: "kubectl rollout pause deployment/nginx",
+				Description: "Resume an already paused deployment",
+				CommandLine: "kubectl rollout resume deployment/nginx",
 			},
 		},
-		Declare: func(cb *cli.CommandBuilder[rolloutPauseConfig]) {
+		Declare: func(cb *cli.CommandBuilder[rolloutResumeConfig]) {
 			client := deriveClientConfig(cb, &cb.Config.Client, client)
 			cb.Access.Stdin(&cb.Config.Streams.In)
 			cb.Access.Stdout(&cb.Config.Streams.Out)
@@ -42,7 +42,7 @@ func rolloutPauseCommand(client cli.Destination[rootConfig, clientConfig]) cli.C
 				cb,
 				&cb.Config.Resources,
 				client,
-				func(cfg *rolloutPauseConfig) (clientConfig, resourceArguments) { return cfg.Client, cfg.Resources },
+				func(cfg *rolloutResumeConfig) (clientConfig, resourceArguments) { return cfg.Client, cfg.Resources },
 				[]string{"deployment"},
 			)
 			files := declareFilenameOptions(cb, &cb.Config.Filename)
@@ -55,17 +55,19 @@ func rolloutPauseCommand(client cli.Destination[rootConfig, clientConfig]) cli.C
 				&cb.Config.ShowManagedFields,
 			)
 
-			fieldManager := cb.Values.String(&cb.Config.FieldManager)
-			cb.Values.Default(fieldManager, "kubectl-rollout")
-			cb.Flags.ValueFor(fieldManager).Description("Name of the manager used to track field ownership.").Long("field-manager")
+			fieldManagerFlag := cb.Flags.String(&cb.Config.FieldManager).Description("Name of the manager used to track field ownership.")
+			cb.Values.ResolveWith(fieldManagerFlag, cli.Value.KeepLast())
+			cb.Values.Default(fieldManagerFlag, "kubectl-rollout")
+			fieldManagerFlag.Long("field-manager")
 
 			selectorFlag := cb.Flags.String(&cb.Config.Selector).Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
+			cb.Values.ResolveWith(selectorFlag, cli.Value.KeepLast())
 			selectorFlag.Long("selector")
 			selectorFlag.Short('l').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
 			requireResourceOrFilenameSource(cb, resources, files)
 		},
-		Run: runRolloutPause,
+		Run: runRolloutResume,
 	}
 	return cmd
 }

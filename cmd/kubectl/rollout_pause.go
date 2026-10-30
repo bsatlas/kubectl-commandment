@@ -5,38 +5,34 @@ import (
 	"k8s.io/cli-runtime/pkg/genericiooptions"
 )
 
-type rolloutHistoryConfig struct {
+type rolloutPauseConfig struct {
 	Client                   clientConfig
 	Streams                  genericiooptions.IOStreams
 	Resources                resourceArguments
 	Filename                 filenameOptions
 	AllowMissingTemplateKeys bool
+	FieldManager             string
 	Output                   string
 	OutputState              cli.OptionalValue[cli.ValueState]
-	Revision                 int64
 	Selector                 string
 	ShowManagedFields        bool
 	Template                 string
 }
 
-func rolloutHistoryCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[rolloutHistoryConfig] {
-	cmd := cli.Command[rolloutHistoryConfig]{
-		Name: "history",
+func rolloutPauseCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[rolloutPauseConfig] {
+	cmd := cli.Command[rolloutPauseConfig]{
+		Name: "pause",
 		Description: cli.Description{
-			Short: "View rollout history",
-			Long:  "View previous rollout revisions and configurations.",
+			Short: "Mark the provided resource as paused",
+			Long:  "Mark the provided resource as paused.\n\nPaused resources will not be reconciled by a controller. Use \"kubectl rollout resume\" to resume a paused resource. Currently only deployments support being paused.",
 		},
 		Examples: []cli.Example{
 			{
-				Description: "View the rollout history of a deployment",
-				CommandLine: "kubectl rollout history deployment/abc",
-			},
-			{
-				Description: "View the details of daemonset revision 3",
-				CommandLine: "kubectl rollout history daemonset/abc --revision=3",
+				Description: "Mark the nginx deployment as paused\nAny current state of the deployment will continue its function; new updates\nto the deployment will not have an effect as long as the deployment is paused",
+				CommandLine: "kubectl rollout pause deployment/nginx",
 			},
 		},
-		Declare: func(cb *cli.CommandBuilder[rolloutHistoryConfig]) {
+		Declare: func(cb *cli.CommandBuilder[rolloutPauseConfig]) {
 			client := deriveClientConfig(cb, &cb.Config.Client, client)
 			cb.Access.Stdin(&cb.Config.Streams.In)
 			cb.Access.Stdout(&cb.Config.Streams.Out)
@@ -46,8 +42,8 @@ func rolloutHistoryCommand(client cli.Destination[rootConfig, clientConfig]) cli
 				cb,
 				&cb.Config.Resources,
 				client,
-				func(cfg *rolloutHistoryConfig) (clientConfig, resourceArguments) { return cfg.Client, cfg.Resources },
-				[]string{"deployment", "daemonset", "statefulset"},
+				func(cfg *rolloutPauseConfig) (clientConfig, resourceArguments) { return cfg.Client, cfg.Resources },
+				[]string{"deployment"},
 			)
 			files := declareFilenameOptions(cb, &cb.Config.Filename)
 			declarePrintFlags(
@@ -59,17 +55,19 @@ func rolloutHistoryCommand(client cli.Destination[rootConfig, clientConfig]) cli
 				&cb.Config.ShowManagedFields,
 			)
 
-			revisionFlag := cb.Flags.Value(&cb.Config.Revision, int64Language()).Description("See the details, including podTemplate of the revision specified")
-			revisionFlag.Long("revision")
+			fieldManagerFlag := cb.Flags.String(&cb.Config.FieldManager).Description("Name of the manager used to track field ownership.")
+			cb.Values.ResolveWith(fieldManagerFlag, cli.Value.KeepLast())
+			cb.Values.Default(fieldManagerFlag, "kubectl-rollout")
+			fieldManagerFlag.Long("field-manager")
 
 			selectorFlag := cb.Flags.String(&cb.Config.Selector).Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
+			cb.Values.ResolveWith(selectorFlag, cli.Value.KeepLast())
 			selectorFlag.Long("selector")
 			selectorFlag.Short('l').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
 			requireResourceOrFilenameSource(cb, resources, files)
-			cb.Rule.AtLeast(revisionFlag.Destination(), int64(0))
 		},
-		Run: runRolloutHistory,
+		Run: runRolloutPause,
 	}
 	return cmd
 }

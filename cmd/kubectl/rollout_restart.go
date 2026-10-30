@@ -67,11 +67,13 @@ func rolloutRestartCommand(client cli.Destination[rootConfig, clientConfig]) cli
 				&cb.Config.ShowManagedFields,
 			)
 
-			fieldManager := cb.Values.String(&cb.Config.FieldManager)
-			cb.Values.Default(fieldManager, "kubectl-rollout")
-			cb.Flags.ValueFor(fieldManager).Description("Name of the manager used to track field ownership.").Long("field-manager")
+			fieldManagerFlag := cb.Flags.String(&cb.Config.FieldManager).Description("Name of the manager used to track field ownership.")
+			cb.Values.ResolveWith(fieldManagerFlag, cli.Value.KeepLast())
+			cb.Values.Default(fieldManagerFlag, "kubectl-rollout")
+			fieldManagerFlag.Long("field-manager")
 
 			selectorFlag := cb.Flags.String(&cb.Config.Selector).Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
+			cb.Values.ResolveWith(selectorFlag, cli.Value.KeepLast())
 			selectorFlag.Long("selector")
 			selectorFlag.Short('l').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 

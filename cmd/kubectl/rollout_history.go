@@ -5,34 +5,38 @@ import (
 	"k8s.io/cli-runtime/pkg/genericiooptions"
 )
 
-type rolloutResumeConfig struct {
+type rolloutHistoryConfig struct {
 	Client                   clientConfig
 	Streams                  genericiooptions.IOStreams
 	Resources                resourceArguments
 	Filename                 filenameOptions
 	AllowMissingTemplateKeys bool
-	FieldManager             string
 	Output                   string
 	OutputState              cli.OptionalValue[cli.ValueState]
+	Revision                 int64
 	Selector                 string
 	ShowManagedFields        bool
 	Template                 string
 }
 
-func rolloutResumeCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[rolloutResumeConfig] {
-	cmd := cli.Command[rolloutResumeConfig]{
-		Name: "resume",
+func rolloutHistoryCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[rolloutHistoryConfig] {
+	cmd := cli.Command[rolloutHistoryConfig]{
+		Name: "history",
 		Description: cli.Description{
-			Short: "Resume a paused resource",
-			Long:  "Resume a paused resource.\n\nPaused resources will not be reconciled by a controller. By resuming a resource, we allow it to be reconciled again. Currently only deployments support being resumed.",
+			Short: "View rollout history",
+			Long:  "View previous rollout revisions and configurations.",
 		},
 		Examples: []cli.Example{
 			{
-				Description: "Resume an already paused deployment",
-				CommandLine: "kubectl rollout resume deployment/nginx",
+				Description: "View the rollout history of a deployment",
+				CommandLine: "kubectl rollout history deployment/abc",
+			},
+			{
+				Description: "View the details of daemonset revision 3",
+				CommandLine: "kubectl rollout history daemonset/abc --revision=3",
 			},
 		},
-		Declare: func(cb *cli.CommandBuilder[rolloutResumeConfig]) {
+		Declare: func(cb *cli.CommandBuilder[rolloutHistoryConfig]) {
 			client := deriveClientConfig(cb, &cb.Config.Client, client)
 			cb.Access.Stdin(&cb.Config.Streams.In)
 			cb.Access.Stdout(&cb.Config.Streams.Out)
@@ -42,8 +46,8 @@ func rolloutResumeCommand(client cli.Destination[rootConfig, clientConfig]) cli.
 				cb,
 				&cb.Config.Resources,
 				client,
-				func(cfg *rolloutResumeConfig) (clientConfig, resourceArguments) { return cfg.Client, cfg.Resources },
-				[]string{"deployment"},
+				func(cfg *rolloutHistoryConfig) (clientConfig, resourceArguments) { return cfg.Client, cfg.Resources },
+				[]string{"deployment", "daemonset", "statefulset"},
 			)
 			files := declareFilenameOptions(cb, &cb.Config.Filename)
 			declarePrintFlags(
@@ -55,17 +59,19 @@ func rolloutResumeCommand(client cli.Destination[rootConfig, clientConfig]) cli.
 				&cb.Config.ShowManagedFields,
 			)
 
-			fieldManager := cb.Values.String(&cb.Config.FieldManager)
-			cb.Values.Default(fieldManager, "kubectl-rollout")
-			cb.Flags.ValueFor(fieldManager).Description("Name of the manager used to track field ownership.").Long("field-manager")
+			revisionFlag := cb.Flags.Value(&cb.Config.Revision, int64Language()).Description("See the details, including podTemplate of the revision specified")
+			cb.Values.ResolveWith(revisionFlag, cli.Value.KeepLast())
+			revisionFlag.Long("revision")
 
 			selectorFlag := cb.Flags.String(&cb.Config.Selector).Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
+			cb.Values.ResolveWith(selectorFlag, cli.Value.KeepLast())
 			selectorFlag.Long("selector")
 			selectorFlag.Short('l').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
 			requireResourceOrFilenameSource(cb, resources, files)
+			cb.Rule.AtLeast(revisionFlag.Destination(), int64(0))
 		},
-		Run: runRolloutResume,
+		Run: runRolloutHistory,
 	}
 	return cmd
 }

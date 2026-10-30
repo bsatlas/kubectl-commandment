@@ -47,17 +47,21 @@ func rolloutStatusCommand(client cli.Destination[rootConfig, clientConfig]) cli.
 			files := declareFilenameOptions(cb, &cb.Config.Filename)
 
 			revisionFlag := cb.Flags.Value(&cb.Config.Revision, int64Language()).Description("Pin to a specific revision for showing its status. Defaults to 0 (last revision).")
+			cb.Values.ResolveWith(revisionFlag, cli.Value.KeepLast())
 			revisionFlag.Long("revision")
 
 			selectorFlag := cb.Flags.String(&cb.Config.Selector).Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
+			cb.Values.ResolveWith(selectorFlag, cli.Value.KeepLast())
 			selectorFlag.Long("selector")
 			selectorFlag.Short('l').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
-			cb.Flags.Value(&cb.Config.Timeout, durationLanguage()).Description("The length of time to wait before ending watch, zero means never. Any other values should contain a corresponding time unit (e.g. 1s, 2m, 3h).").Long("timeout")
+			timeoutFlag := cb.Flags.Value(&cb.Config.Timeout, durationLanguage()).Description("The length of time to wait before ending watch, zero means never. Any other values should contain a corresponding time unit (e.g. 1s, 2m, 3h).")
+			cb.Values.ResolveWith(timeoutFlag, cli.Value.KeepLast())
+			timeoutFlag.Long("timeout")
 
-			watch := cb.Values.Bool(&cb.Config.Watch)
-			cb.Values.Default(watch, true)
-			watchFlag := cb.Flags.ValueFor(watch).Description("Watch the status of the rollout until it's done.")
+			watchFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Watch)).Description("Watch the status of the rollout until it's done.")
+			cb.Values.ResolveWith(watchFlag, cli.Value.KeepLast())
+			cb.Values.Default(watchFlag, true)
 			watchFlag.Long("watch").ImplicitValue(true)
 			watchFlag.Short('w').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
 
