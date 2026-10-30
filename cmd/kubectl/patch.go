@@ -7,6 +7,7 @@ import (
 	"github.com/abstractionsinc/commandment/cli"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/cli-runtime/pkg/genericiooptions"
+	"k8s.io/kubectl/pkg/cmd/util"
 )
 
 var patchTypeLanguage = cli.ValueCodec[types.PatchType]{
@@ -49,16 +50,15 @@ type patchConfig struct {
 	Streams                  genericiooptions.IOStreams
 	Arguments                []string
 	AllowMissingTemplateKeys bool
-	DryRun                   string
+	DryRun                   util.DryRunStrategy
 	FieldManager             string
-	Filename                 []string
-	Kustomize                string
+	Filename                 filenameOptions
 	Local                    bool
 	Output                   string
+	OutputState              cli.OptionalValue[cli.ValueState]
 	Patch                    string
 	PatchFile                string
 	Record                   bool
-	Recursive                bool
 	ShowManagedFields        bool
 	Subresource              string
 	Template                 string
@@ -114,73 +114,68 @@ func patchCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[
 					From(client)
 			})
 
-			allowMissingTemplateKeysFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.AllowMissingTemplateKeys))
-			allowMissingTemplateKeysFlag.Description("If true, ignore any errors in templates when a field or map key is missing in the template. Only applies to golang and jsonpath output formats.")
-			cb.Values.Default(allowMissingTemplateKeysFlag, true)
-			allowMissingTemplateKeysFlag.Long("allow-missing-template-keys").ImplicitValue(true)
+			declarePrintFlags(cb, &cb.Config.Output, &cb.Config.OutputState, &cb.Config.Template, &cb.Config.AllowMissingTemplateKeys, &cb.Config.ShowManagedFields)
 
-			dryRun := cb.Values.String(&cb.Config.DryRun)
+			dryRun := cb.Values.Value(&cb.Config.DryRun, dryRunValueLanguage)
 			dryRunFlag := cb.Flags.ValueFor(dryRun)
+			cb.Values.ResolveWith(dryRunFlag, cli.Value.KeepLast())
 			dryRunFlag.Description("Must be \"none\", \"server\", or \"client\". If client strategy, only print the object that would be sent, without sending it. If server strategy, submit server-side request without persisting the resource.")
-			cb.Values.Default(dryRun, "none")
-			dryRunFlagLong := dryRunFlag.Long("dry-run")
-			dryRunFlagLong.ImplicitValue("unchanged")
+			cb.Values.Default(dryRun, util.DryRunNone)
+			dryRunFlag.Long("dry-run").ImplicitValue(util.DryRunClient)
 
 			fieldManagerFlag := cb.Flags.String(&cb.Config.FieldManager)
+			cb.Values.ResolveWith(fieldManagerFlag, cli.Value.KeepLast())
 			fieldManagerFlag.Description("Name of the manager used to track field ownership.")
 			cb.Values.Default(fieldManagerFlag, "kubectl-patch")
 			fieldManagerFlag.Long("field-manager")
 
-			filenameValue := cb.Values.Sequence(&cb.Config.Filename, cli.Value.String())
+			filenameValue := cb.Values.Sequence(&cb.Config.Filename.Groups, filenameListLanguage)
 			filenameFlag := cb.Flags.Sequence(filenameValue)
-			filenameFlag.DelimitedBy(",")
 			filenameFlag.Description("Filename, directory, or URL to files identifying the resource to update")
 			filenameFlag.Long("filename")
-			filenameFlag.Short('f')
+			filenameFlag.Short('f').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
-			kustomize := cb.Values.String(&cb.Config.Kustomize)
+			kustomize := cb.Values.String(&cb.Config.Filename.Kustomize)
 			kustomizeFlag := cb.Flags.ValueFor(kustomize)
+			cb.Values.ResolveWith(kustomizeFlag, cli.Value.KeepLast())
 			kustomizeFlag.Description("Process the kustomization directory. This flag can't be used together with -f or -R.")
 			kustomizeFlag.Long("kustomize")
-			kustomizeFlag.Short('k')
+			kustomizeFlag.Short('k').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
 			local := cb.Values.Bool(&cb.Config.Local)
 			localFlag := cb.Flags.ValueFor(local)
+			cb.Values.ResolveWith(localFlag, cli.Value.KeepLast())
 			localFlag.Description("If true, patch will operate on the content of the file, not the server-side resource.")
 			localFlag.Long("local").ImplicitValue(true)
 
-			outputFlag := cb.Flags.String(&cb.Config.Output)
-			outputFlag.Description("Output format. One of: (json, yaml, kyaml, name, go-template, go-template-file, template, templatefile, jsonpath, jsonpath-as-json, jsonpath-file).")
-			outputFlag.Long("output")
-			outputFlag.Short('o')
-
 			patch := cb.Values.String(&cb.Config.Patch)
 			patchFlag := cb.Flags.ValueFor(patch)
+			cb.Values.ResolveWith(patchFlag, cli.Value.KeepLast())
 			patchFlag.Description("The patch to be applied to the resource JSON file.")
 			patchFlag.Long("patch")
-			patchFlag.Short('p')
+			patchFlag.Short('p').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
 			patchFile := cb.Values.String(&cb.Config.PatchFile)
 			patchFileFlag := cb.Flags.ValueFor(patchFile)
+			cb.Values.ResolveWith(patchFileFlag, cli.Value.KeepLast())
 			patchFileFlag.Description("A file containing a patch to be applied to the resource.")
 			patchFileFlag.Long("patch-file")
 
 			recordFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Record))
+			cb.Values.ResolveWith(recordFlag, cli.Value.KeepLast())
 			recordFlag.Description("Record current kubectl command in the resource annotation. If set to false, do not record the command. If set to true, record the command. If not set, default to updating the existing annotation value only if one already exists.")
 			recordFlag.Hidden().Release(preexistingDeprecation("--record will be removed in the future"))
 			recordFlag.Long("record").ImplicitValue(true)
 
-			recursive := cb.Values.Bool(&cb.Config.Recursive)
+			recursive := cb.Values.Bool(&cb.Config.Filename.Recursive)
 			recursiveFlag := cb.Flags.ValueFor(recursive)
+			cb.Values.ResolveWith(recursiveFlag, cli.Value.KeepLast())
 			recursiveFlag.Description("Process the directory used in -f, --filename recursively. Useful when you want to manage related manifests organized within the same directory.")
 			recursiveFlag.Long("recursive").ImplicitValue(true)
 			recursiveFlag.Short('R').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
 
-			showManagedFieldsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowManagedFields))
-			showManagedFieldsFlag.Description("If true, keep the managedFields when printing objects in JSON or YAML format.")
-			showManagedFieldsFlag.Long("show-managed-fields").ImplicitValue(true)
-
 			subresourceFlag := cb.Flags.String(&cb.Config.Subresource)
+			cb.Values.ResolveWith(subresourceFlag, cli.Value.KeepLast())
 			subresourceFlag.Description("If specified, patch will operate on the subresource of the requested object.")
 			subresourceFlag.CompleteBy(literalCompleter[patchConfig](
 				cli.CompletionCandidateValue,
@@ -188,12 +183,9 @@ func patchCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[
 			))
 			subresourceFlag.Long("subresource")
 
-			templateFlag := cb.Flags.String(&cb.Config.Template)
-			templateFlag.Description("Template string or path to template file to use when -o=go-template, -o=go-template-file. The template format is golang templates [http://golang.org/pkg/text/template/#pkg-overview].")
-			templateFlag.Long("template")
-
 			patchType := cb.Values.Value(&cb.Config.Type, patchTypeLanguage)
 			typeFlag := cb.Flags.ValueFor(patchType)
+			cb.Values.ResolveWith(typeFlag, cli.Value.KeepLast())
 			typeFlag.Description("The type of patch being provided; one of [json merge strategic]")
 			cb.Values.Default(patchType, types.StrategicMergePatchType)
 			typeFlag.Long("type")
@@ -207,8 +199,8 @@ func patchCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[
 				DependsOn(patchFile.OptionalDependency())
 			cb.Rule.When(cb.When.Equal(recursive, true)).Equal(kustomize, "")
 			cb.Rule.Check("kubectl-patch-source", func(_ context.Context, cfg *patchConfig, _ cli.Dependencies) (bool, error) {
-				hasFilename := len(cfg.Filename) > 0
-				hasKustomize := cfg.Kustomize != ""
+				hasFilename := len(cfg.Filename.Filenames()) > 0
+				hasKustomize := cfg.Filename.Kustomize != ""
 				if hasFilename && hasKustomize {
 					return false, nil
 				}
@@ -218,7 +210,7 @@ func patchCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[
 				DependsOn(filenameValue.OptionalDependency()).
 				DependsOn(kustomize.OptionalDependency())
 			cb.Rule.When(cb.When.Equal(local, true)).Forbid(arguments)
-			cb.Rule.When(cb.When.Equal(local, true)).NotEqual(dryRun, "server")
+			cb.Rule.When(cb.When.Equal(local, true)).NotEqual(dryRun, util.DryRunServer)
 		},
 		Run: runPatch,
 	}

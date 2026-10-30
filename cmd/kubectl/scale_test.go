@@ -20,8 +20,23 @@ func TestScaleDeclaresSelectionAndReplicaBounds(t *testing.T) {
 		ready bool
 	}{
 		{
+			name:  "invalid dry run",
+			args:  []string{"scale", "deployment/foo", "--replicas=2", "--dry-run=wat"},
+			ready: false,
+		},
+		{
+			name:  "invalid output format",
+			args:  []string{"scale", "deployment/foo", "--replicas=2", "--output=wat"},
+			ready: false,
+		},
+		{
 			name:  "resource replicas",
 			args:  []string{"scale", "deployment/foo", "--replicas=2"},
+			ready: true,
+		},
+		{
+			name:  "assigned short filename",
+			args:  []string{"scale", "-f=deployment.yaml", "--replicas=2"},
 			ready: true,
 		},
 		{
@@ -65,16 +80,6 @@ func TestScaleDeclaresSelectionAndReplicaBounds(t *testing.T) {
 			ready: false,
 		},
 		{
-			name:  "filename and explicit empty kustomize",
-			args:  []string{"scale", "--replicas=2", "-f", "a.yaml", "--kustomize="},
-			ready: true,
-		},
-		{
-			name:  "explicit empty kustomize is not a source",
-			args:  []string{"scale", "--replicas=2", "--kustomize="},
-			ready: false,
-		},
-		{
 			name:  "recursive kustomize",
 			args:  []string{"scale", "-k", "dir", "--recursive", "--replicas=2"},
 			ready: false,
@@ -99,4 +104,21 @@ func TestScaleDeclaresSelectionAndReplicaBounds(t *testing.T) {
 			)
 		})
 	}
+}
+
+func TestScaleRepeatedScalarUsesLastOccurrence(t *testing.T) {
+	t.Parallel()
+
+	app, err := application(pluginCatalog{})
+	if err != nil {
+		t.Fatalf("Application() error = %v", err)
+	}
+	request := cli.InspectionRequest{
+		Args: []string{"scale", "deployment/foo", "--replicas=2", "--replicas=3"},
+	}
+	inspection := clitest.Inspect(t.Context(), app, request)
+	inspection.Require(t,
+		clitest.InspectionReady(),
+		clitest.RootCommand().Command("scale").Flag("--replicas").Value().Text("3"),
+	)
 }

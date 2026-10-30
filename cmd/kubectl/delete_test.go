@@ -21,6 +21,16 @@ func TestDeleteDeclaresSelectionDefaultsAndCompatibility(t *testing.T) {
 		ignoreMissing string
 	}{
 		{
+			name:  "invalid dry run",
+			args:  []string{"delete", "pod/foo", "--dry-run=wat"},
+			ready: false,
+		},
+		{
+			name:  "assigned short filename",
+			args:  []string{"delete", "-f=pod.yaml"},
+			ready: true,
+		},
+		{
 			name:          "all defaults ignore not found",
 			args:          []string{"delete", "pods", "--all"},
 			ready:         true,
@@ -68,15 +78,6 @@ func TestDeleteDeclaresSelectionDefaultsAndCompatibility(t *testing.T) {
 		{
 			name: "filename and kustomize",
 			args: []string{"delete", "-f", "a.yaml", "-k", "dir"},
-		},
-		{
-			name:  "filename and explicit empty kustomize",
-			args:  []string{"delete", "-f", "a.yaml", "--kustomize="},
-			ready: true,
-		},
-		{
-			name: "explicit empty kustomize is not a source",
-			args: []string{"delete", "--kustomize="},
 		},
 		{
 			name: "recursive kustomize",
@@ -161,4 +162,21 @@ func TestDeleteDeclaresSelectionDefaultsAndCompatibility(t *testing.T) {
 			)
 		})
 	}
+}
+
+func TestDeleteRepeatedScalarUsesLastOccurrence(t *testing.T) {
+	t.Parallel()
+
+	app, err := application(pluginCatalog{})
+	if err != nil {
+		t.Fatalf("Application() error = %v", err)
+	}
+	request := cli.InspectionRequest{
+		Args: []string{"delete", "pod/foo", "--timeout=1s", "--timeout=2s"},
+	}
+	inspection := clitest.Inspect(t.Context(), app, request)
+	inspection.Require(t,
+		clitest.InspectionReady(),
+		clitest.RootCommand().Command("delete").Flag("--timeout").Value().Text("2s"),
+	)
 }

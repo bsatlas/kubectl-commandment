@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -38,12 +37,13 @@ import (
 )
 
 type forceReplaceOperation struct {
-	config           *replaceConfig
-	deleteOptions    *delete.DeleteOptions
-	schema           validation.Schema
-	namespace        string
-	enforceNamespace bool
-	printObject      func(runtime.Object) error
+	config              *replaceConfig
+	deleteOptions       *delete.DeleteOptions
+	schema              validation.Schema
+	validationDirective string
+	namespace           string
+	enforceNamespace    bool
+	printObject         func(runtime.Object) error
 }
 
 func runReplace(ctx context.Context, cfg *replaceConfig) error {
@@ -54,9 +54,9 @@ func runReplace(ctx context.Context, cfg *replaceConfig) error {
 	}
 
 	deleteFlags := delete.NewDeleteFlags("The files, directories or URLs that contain the configurations to replace.")
-	*deleteFlags.FileNameFlags.Filenames = slices.Clone(cfg.Filename)
-	*deleteFlags.FileNameFlags.Kustomize = cfg.Kustomize
-	*deleteFlags.FileNameFlags.Recursive = cfg.Recursive
+	*deleteFlags.FileNameFlags.Filenames = cfg.Filename.Filenames()
+	*deleteFlags.FileNameFlags.Kustomize = cfg.Filename.Kustomize
+	*deleteFlags.FileNameFlags.Recursive = cfg.Filename.Recursive
 	*deleteFlags.CascadingStrategy = cfg.Cascade.flagValue()
 	*deleteFlags.Force = cfg.Force
 	*deleteFlags.GracePeriod = cfg.GracePeriod
@@ -72,10 +72,7 @@ func runReplace(ctx context.Context, cfg *replaceConfig) error {
 		fmt.Fprintln(deleteOptions.ErrOut, warning)
 	}
 
-	strategy, err := dryRunStrategy(cfg.DryRun)
-	if err != nil {
-		return err
-	}
+	strategy := cfg.DryRun
 	if cfg.Raw != "" {
 		filename := deleteOptions.FilenameOptions.Filenames[0]
 		client, err := factory.RESTClient()
@@ -85,7 +82,11 @@ func runReplace(ctx context.Context, cfg *replaceConfig) error {
 		return rawhttp.RawPut(client, cfg.Streams, cfg.Raw, filename)
 	}
 
-	schema, err := factory.Validator(cfg.Validate)
+	fieldValidation, err := validationDirective(cfg.Validate)
+	if err != nil {
+		return err
+	}
+	schema, err := factory.Validator(fieldValidation)
 	if err != nil {
 		return err
 	}
@@ -95,7 +96,7 @@ func runReplace(ctx context.Context, cfg *replaceConfig) error {
 	}
 
 	printFlags := genericclioptions.NewPrintFlags("replaced").WithTypeSetter(scheme.Scheme)
-	configurePrintFlags(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
+	configurePrintFlagsWithOutputState(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields, cfg.OutputState)
 	util.PrintFlagsWithDryRunStrategy(printFlags, strategy)
 	printer, err := printFlags.ToPrinter()
 	if err != nil {
@@ -107,12 +108,13 @@ func runReplace(ctx context.Context, cfg *replaceConfig) error {
 
 	if deleteOptions.ForceDeletion {
 		operation := forceReplaceOperation{
-			config:           cfg,
-			deleteOptions:    deleteOptions,
-			schema:           schema,
-			namespace:        namespace,
-			enforceNamespace: enforceNamespace,
-			printObject:      printObject,
+			config:              cfg,
+			deleteOptions:       deleteOptions,
+			schema:              schema,
+			validationDirective: fieldValidation,
+			namespace:           namespace,
+			enforceNamespace:    enforceNamespace,
+			printObject:         printObject,
 		}
 		return operation.run(ctx)
 	}
@@ -148,7 +150,7 @@ func runReplace(ctx context.Context, cfg *replaceConfig) error {
 		object, err := resource.NewHelper(info.Client, info.Mapping).
 			DryRun(strategy == util.DryRunServer).
 			WithFieldManager(cfg.FieldManager).
-			WithFieldValidation(cfg.Validate).
+			WithFieldValidation(fieldValidation).
 			WithSubresource(cfg.Subresource).
 			Replace(info.Namespace, info.Name, true, info.Object)
 		if err != nil {
@@ -190,7 +192,7 @@ func (operation forceReplaceOperation) run(ctx context.Context) error {
 		Subresource(cfg.Subresource).
 		Flatten()
 	if stdinInUse {
-		builder = builder.StdinInUse()
+		builder.StdinInUse()
 	}
 	result := builder.Do()
 	if err := result.Err(); err != nil {
@@ -228,7 +230,7 @@ func (operation forceReplaceOperation) run(ctx context.Context) error {
 		Subresource(cfg.Subresource).
 		Flatten()
 	if stdinInUse {
-		builder = builder.StdinInUse()
+		builder.StdinInUse()
 	}
 	result = builder.Do()
 	if err := result.Err(); err != nil {
@@ -249,7 +251,7 @@ func (operation forceReplaceOperation) run(ctx context.Context) error {
 		}
 		object, err := resource.NewHelper(info.Client, info.Mapping).
 			WithFieldManager(cfg.FieldManager).
-			WithFieldValidation(cfg.Validate).
+			WithFieldValidation(operation.validationDirective).
 			Create(info.Namespace, true, info.Object)
 		if err != nil {
 			return err

@@ -18,10 +18,7 @@ import (
 )
 
 func runDrain(ctx context.Context, cfg *drainConfig) error {
-	strategy, err := dryRunStrategy(cfg.DryRun)
-	if err != nil {
-		return err
-	}
+	strategy := cfg.DryRun
 	if err := cordonNodes(cfg.Client, cfg.Streams, cfg.Arguments, cfg.Selector, cfg.DryRun, nodeUnschedulable); err != nil {
 		return err
 	}
@@ -131,7 +128,7 @@ func runDrain(ctx context.Context, cfg *drainConfig) error {
 }
 
 func drainNodeInfos(builder *resource.Builder, namespace string, names []string, selector string, chunkSize int64) ([]*resource.Info, error) {
-	builder = builder.
+	builder.
 		WithScheme(scheme.Scheme, scheme.Scheme.PrioritizedVersionsAllGroups()...).
 		NamespaceParam(namespace).DefaultNamespace().
 		RequestChunksOf(chunkSize).
@@ -139,7 +136,7 @@ func drainNodeInfos(builder *resource.Builder, namespace string, names []string,
 		SingleResourceType().
 		Flatten()
 	if selector != "" {
-		builder = builder.LabelSelectorParam(selector).ResourceTypes("nodes")
+		builder.LabelSelectorParam(selector).ResourceTypes("nodes")
 	}
 	result := builder.Do()
 	if err := result.Err(); err != nil {

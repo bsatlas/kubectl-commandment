@@ -6,6 +6,7 @@ import (
 
 	"github.com/abstractionsinc/commandment/cli"
 	"k8s.io/cli-runtime/pkg/genericiooptions"
+	"k8s.io/kubectl/pkg/cmd/util"
 )
 
 type scaleConfig struct {
@@ -15,12 +16,11 @@ type scaleConfig struct {
 	All                      bool
 	AllowMissingTemplateKeys bool
 	CurrentReplicas          int
-	DryRun                   string
-	Filename                 []string
-	Kustomize                string
+	DryRun                   util.DryRunStrategy
+	Filename                 filenameOptions
 	Output                   string
+	OutputState              cli.OptionalValue[cli.ValueState]
 	Record                   bool
-	Recursive                bool
 	Replicas                 int
 	ResourceVersion          string
 	Selector                 string
@@ -76,79 +76,72 @@ func scaleCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[
 
 			all := cb.Values.Bool(&cb.Config.All)
 			allFlag := cb.Flags.ValueFor(all)
+			cb.Values.ResolveWith(allFlag, cli.Value.KeepLast())
 			allFlag.Description("Select all resources in the namespace of the specified resource types")
 			allFlag.Long("all").ImplicitValue(true)
 
-			allowMissingTemplateKeysFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.AllowMissingTemplateKeys))
-			allowMissingTemplateKeysFlag.Description("If true, ignore any errors in templates when a field or map key is missing in the template. Only applies to golang and jsonpath output formats.")
-			cb.Values.Default(allowMissingTemplateKeysFlag, true)
-			allowMissingTemplateKeysFlag.Long("allow-missing-template-keys").ImplicitValue(true)
+			declarePrintFlags(cb, &cb.Config.Output, &cb.Config.OutputState, &cb.Config.Template, &cb.Config.AllowMissingTemplateKeys, &cb.Config.ShowManagedFields)
 
 			currentReplicas := cb.Values.Int(&cb.Config.CurrentReplicas)
 			currentReplicasFlag := cb.Flags.ValueFor(currentReplicas)
+			cb.Values.ResolveWith(currentReplicasFlag, cli.Value.KeepLast())
 			currentReplicasFlag.Description("Precondition for current size. Requires that the current size of the resource match this value in order to scale. -1 (default) for no condition.")
 			cb.Values.Default(currentReplicas, -1)
 			currentReplicasFlag.Long("current-replicas")
 
-			dryRunFlag := cb.Flags.String(&cb.Config.DryRun)
+			dryRun := cb.Values.Value(&cb.Config.DryRun, dryRunValueLanguage)
+			dryRunFlag := cb.Flags.ValueFor(dryRun)
+			cb.Values.ResolveWith(dryRunFlag, cli.Value.KeepLast())
 			dryRunFlag.Description("Must be \"none\", \"server\", or \"client\". If client strategy, only print the object that would be sent, without sending it. If server strategy, submit server-side request without persisting the resource.")
-			cb.Values.Default(dryRunFlag, "none")
-			dryRunFlagLong := dryRunFlag.Long("dry-run")
-			dryRunFlagLong.ImplicitValue("unchanged")
+			cb.Values.Default(dryRun, util.DryRunNone)
+			dryRunFlag.Long("dry-run").ImplicitValue(util.DryRunClient)
 
-			filenameValue := cb.Values.Sequence(&cb.Config.Filename, cli.Value.String())
+			filenameValue := cb.Values.Sequence(&cb.Config.Filename.Groups, filenameListLanguage)
 			filenameFlag := cb.Flags.Sequence(filenameValue)
-			filenameFlag.DelimitedBy(",")
 			filenameFlag.Description("Filename, directory, or URL to files identifying the resource to set a new size")
 			filenameFlag.Long("filename")
-			filenameFlag.Short('f')
+			filenameFlag.Short('f').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
-			kustomize := cb.Values.String(&cb.Config.Kustomize)
+			kustomize := cb.Values.String(&cb.Config.Filename.Kustomize)
 			kustomizeFlag := cb.Flags.ValueFor(kustomize)
+			cb.Values.ResolveWith(kustomizeFlag, cli.Value.KeepLast())
 			kustomizeFlag.Description("Process the kustomization directory. This flag can't be used together with -f or -R.")
 			kustomizeFlag.Long("kustomize")
-			kustomizeFlag.Short('k')
-
-			outputFlag := cb.Flags.String(&cb.Config.Output)
-			outputFlag.Description("Output format. One of: (json, yaml, kyaml, name, go-template, go-template-file, template, templatefile, jsonpath, jsonpath-as-json, jsonpath-file).")
-			outputFlag.Long("output")
-			outputFlag.Short('o')
+			kustomizeFlag.Short('k').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
 			recordFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Record))
+			cb.Values.ResolveWith(recordFlag, cli.Value.KeepLast())
 			recordFlag.Description("Record current kubectl command in the resource annotation. If set to false, do not record the command. If set to true, record the command. If not set, default to updating the existing annotation value only if one already exists.")
 			recordFlag.Hidden().Release(preexistingDeprecation("--record will be removed in the future"))
 			recordFlag.Long("record").ImplicitValue(true)
 
-			recursive := cb.Values.Bool(&cb.Config.Recursive)
+			recursive := cb.Values.Bool(&cb.Config.Filename.Recursive)
 			recursiveFlag := cb.Flags.ValueFor(recursive)
+			cb.Values.ResolveWith(recursiveFlag, cli.Value.KeepLast())
 			recursiveFlag.Description("Process the directory used in -f, --filename recursively. Useful when you want to manage related manifests organized within the same directory.")
 			recursiveFlag.Long("recursive").ImplicitValue(true)
 			recursiveFlag.Short('R').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
 
 			replicas := cb.Values.Int(&cb.Config.Replicas)
 			replicasFlag := cb.Flags.ValueFor(replicas)
+			cb.Values.ResolveWith(replicasFlag, cli.Value.KeepLast())
 			replicasFlag.Description("The new desired number of replicas. Required.")
 			replicasFlag.Long("replicas")
 
 			resourceVersionFlag := cb.Flags.String(&cb.Config.ResourceVersion)
+			cb.Values.ResolveWith(resourceVersionFlag, cli.Value.KeepLast())
 			resourceVersionFlag.Description("Precondition for resource version. Requires that the current resource version match this value in order to scale.")
 			resourceVersionFlag.Long("resource-version")
 
 			selector := cb.Values.String(&cb.Config.Selector)
 			selectorFlag := cb.Flags.ValueFor(selector)
+			cb.Values.ResolveWith(selectorFlag, cli.Value.KeepLast())
 			selectorFlag.Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
 			selectorFlag.Long("selector")
-			selectorFlag.Short('l')
-
-			showManagedFieldsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowManagedFields))
-			showManagedFieldsFlag.Description("If true, keep the managedFields when printing objects in JSON or YAML format.")
-			showManagedFieldsFlag.Long("show-managed-fields").ImplicitValue(true)
-
-			templateFlag := cb.Flags.String(&cb.Config.Template)
-			templateFlag.Description("Template string or path to template file to use when -o=go-template, -o=go-template-file. The template format is golang templates [http://golang.org/pkg/text/template/#pkg-overview].")
-			templateFlag.Long("template")
+			selectorFlag.Short('l').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
 			timeoutFlag := cb.Flags.Value(&cb.Config.Timeout, durationLanguage())
+			cb.Values.ResolveWith(timeoutFlag, cli.Value.KeepLast())
 			timeoutFlag.Description("The length of time to wait before giving up on a scale operation, zero means don't wait. Any other values should contain a corresponding time unit (e.g. 1s, 2m, 3h).")
 			timeoutFlag.Long("timeout")
 
@@ -157,8 +150,8 @@ func scaleCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[
 			cb.Rule.AtLeast(currentReplicas, -1)
 			cb.Rule.When(cb.When.Equal(recursive, true)).Equal(kustomize, "")
 			cb.Rule.Check("kubectl-scale-source", func(_ context.Context, cfg *scaleConfig, _ cli.Dependencies) (bool, error) {
-				hasFilename := len(cfg.Filename) > 0
-				hasKustomize := cfg.Kustomize != ""
+				hasFilename := len(cfg.Filename.Filenames()) > 0
+				hasKustomize := cfg.Filename.Kustomize != ""
 				if hasFilename && hasKustomize {
 					return false, nil
 				}

@@ -19,7 +19,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"slices"
 
 	"gopkg.in/evanphx/json-patch.v4"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -37,19 +36,16 @@ import (
 )
 
 func runLabel(_ context.Context, cfg *labelConfig) error {
-	strategy, err := dryRunStrategy(cfg.DryRun)
-	if err != nil {
-		return err
-	}
+	strategy := cfg.DryRun
 	factory := cfg.Client.factory()
 	namespace, enforceNamespace, err := factory.ToRawKubeConfigLoader().Namespace()
 	if err != nil && !(cfg.Local && clientcmd.IsEmptyConfig(err)) {
 		return err
 	}
 	filename := resource.FilenameOptions{
-		Filenames: slices.Clone(cfg.Filename),
-		Kustomize: cfg.Kustomize,
-		Recursive: cfg.Recursive,
+		Filenames: cfg.Filename.Filenames(),
+		Kustomize: cfg.Filename.Kustomize,
+		Recursive: cfg.Filename.Recursive,
 	}
 	builder := factory.NewBuilder().
 		Unstructured().
@@ -59,7 +55,7 @@ func runLabel(_ context.Context, cfg *labelConfig) error {
 		FilenameParam(enforceNamespace, &filename).
 		Flatten()
 	if !cfg.Local {
-		builder = builder.LabelSelectorParam(cfg.Selector).
+		builder.LabelSelectorParam(cfg.Selector).
 			FieldSelectorParam(cfg.FieldSelector).
 			AllNamespaces(cfg.AllNamespaces).
 			ResourceTypeOrNameArgs(cfg.All, cfg.Operands.Resources...).
@@ -168,7 +164,7 @@ func runLabel(_ context.Context, cfg *labelConfig) error {
 		}
 
 		printFlags := genericclioptions.NewPrintFlags(operation).WithTypeSetter(scheme.Scheme)
-		configurePrintFlags(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
+		configurePrintFlagsWithOutputState(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields, cfg.OutputState)
 		printObj, err := printObject(printFlags, strategy, cfg.Streams.Out)
 		if err != nil {
 			return err

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/abstractionsinc/commandment/cli"
 	"gopkg.in/evanphx/json-patch.v4"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -43,6 +44,7 @@ type editRunConfig struct {
 	Filename                 []string
 	Kustomize                string
 	Output                   string
+	OutputState              cli.OptionalValue[cli.ValueState]
 	OutputPatch              bool
 	Record                   bool
 	Recursive                bool
@@ -87,7 +89,11 @@ func runEditOperation(cfg editRunConfig, mode editMode) error {
 	}
 
 	printFlags := genericclioptions.NewPrintFlags("edited").WithTypeSetter(scheme.Scheme)
-	configurePrintFlags(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
+	if cfg.OutputState.Present {
+		configurePrintFlagsWithOutputState(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields, cfg.OutputState)
+	} else {
+		configurePrintFlags(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
+	}
 	toPrinter := func(operation string) (printers.ResourcePrinter, error) {
 		printFlags.NamePrintFlags.Operation = operation
 		return printFlags.ToPrinter()
@@ -152,12 +158,13 @@ func runEdit(_ context.Context, cfg *editConfig) error {
 		Arguments:                cfg.Arguments,
 		AllowMissingTemplateKeys: cfg.AllowMissingTemplateKeys,
 		FieldManager:             cfg.FieldManager,
-		Filename:                 cfg.Filename,
-		Kustomize:                cfg.Kustomize,
+		Filename:                 cfg.Filename.Filenames(),
+		Kustomize:                cfg.Filename.Kustomize,
 		Output:                   cfg.Output,
+		OutputState:              cfg.OutputState,
 		OutputPatch:              cfg.OutputPatch,
 		Record:                   cfg.Record,
-		Recursive:                cfg.Recursive,
+		Recursive:                cfg.Filename.Recursive,
 		SaveConfig:               cfg.SaveConfig,
 		ShowManagedFields:        cfg.ShowManagedFields,
 		Subresource:              cfg.Subresource,
@@ -237,7 +244,7 @@ func (e *editPrinterOptions) PrintObj(obj runtime.Object, out io.Writer) error {
 
 // Run performs the execution
 func (o *editOperation) Run() error {
-	edit := editor.NewDefaultEditor(editorEnvs())
+	edit := editor.NewDefaultEditor([]string{"KUBE_EDITOR", "EDITOR"})
 	// editFn is invoked for each edit session (once with a list for normal edit, once for each individual resource in a edit-on-create invocation)
 	editFn := func(infos []*resource.Info) error {
 		var (
@@ -875,14 +882,6 @@ func hashOnLineBreak(s string) string {
 		result.WriteByte(s[i])
 	}
 	return result.String()
-}
-
-// editorEnvs returns an ordered list of env vars to check for editor preferences.
-func editorEnvs() []string {
-	return []string{
-		"KUBE_EDITOR",
-		"EDITOR",
-	}
 }
 
 func editInvalidError(err error) error {

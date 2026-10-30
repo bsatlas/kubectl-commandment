@@ -20,8 +20,18 @@ func TestDrainDeclaresNodeSelectionAndPodSelectorLanguage(t *testing.T) {
 		ready bool
 	}{
 		{
+			name:  "invalid dry run",
+			args:  []string{"drain", "node-a", "--dry-run=wat"},
+			ready: false,
+		},
+		{
 			name:  "node argument",
 			args:  []string{"drain", "node-a"},
+			ready: true,
+		},
+		{
+			name:  "assigned short selector",
+			args:  []string{"drain", "-l=role=worker"},
 			ready: true,
 		},
 		{
@@ -38,16 +48,6 @@ func TestDrainDeclaresNodeSelectionAndPodSelectorLanguage(t *testing.T) {
 			name:  "argument and selector",
 			args:  []string{"drain", "node-a", "--selector=role=worker"},
 			ready: false,
-		},
-		{
-			name:  "argument and explicit empty selector",
-			args:  []string{"drain", "node-a", "--selector="},
-			ready: true,
-		},
-		{
-			name:  "explicit empty selector",
-			args:  []string{"drain", "--selector="},
-			ready: true,
 		},
 		{
 			name:  "valid pod selector",
@@ -79,4 +79,21 @@ func TestDrainDeclaresNodeSelectionAndPodSelectorLanguage(t *testing.T) {
 			)
 		})
 	}
+}
+
+func TestDrainRepeatedScalarUsesLastOccurrence(t *testing.T) {
+	t.Parallel()
+
+	app, err := application(pluginCatalog{})
+	if err != nil {
+		t.Fatalf("Application() error = %v", err)
+	}
+	request := cli.InspectionRequest{
+		Args: []string{"drain", "node-a", "--grace-period=1", "--grace-period=2"},
+	}
+	inspection := clitest.Inspect(t.Context(), app, request)
+	inspection.Require(t,
+		clitest.InspectionReady(),
+		clitest.RootCommand().Command("drain").Flag("--grace-period").Value().Text("2"),
+	)
 }

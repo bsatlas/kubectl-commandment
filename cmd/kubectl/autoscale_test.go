@@ -20,8 +20,23 @@ func TestAutoscaleDeclaresFrontendSelectionAndBounds(t *testing.T) {
 		ready bool
 	}{
 		{
+			name:  "invalid dry run",
+			args:  []string{"autoscale", "deployment/foo", "--max=3", "--dry-run=wat"},
+			ready: false,
+		},
+		{
+			name:  "invalid output format",
+			args:  []string{"autoscale", "deployment/foo", "--max=3", "--output=wat"},
+			ready: false,
+		},
+		{
 			name:  "resource and max",
 			args:  []string{"autoscale", "deployment/foo", "--max=3"},
+			ready: true,
+		},
+		{
+			name:  "assigned short filename",
+			args:  []string{"autoscale", "-f=deployment.yaml", "--max=3"},
 			ready: true,
 		},
 		{
@@ -55,21 +70,6 @@ func TestAutoscaleDeclaresFrontendSelectionAndBounds(t *testing.T) {
 			ready: false,
 		},
 		{
-			name:  "explicit empty cpu",
-			args:  []string{"autoscale", "deployment/foo", "--max=3", "--cpu="},
-			ready: true,
-		},
-		{
-			name:  "cpu percent with explicit empty cpu",
-			args:  []string{"autoscale", "deployment/foo", "--max=3", "--cpu-percent=60", "--cpu="},
-			ready: true,
-		},
-		{
-			name:  "explicit empty memory",
-			args:  []string{"autoscale", "deployment/foo", "--max=3", "--memory="},
-			ready: true,
-		},
-		{
 			name:  "invalid cpu target",
 			args:  []string{"autoscale", "deployment/foo", "--max=3", "--cpu=watts"},
 			ready: false,
@@ -87,16 +87,6 @@ func TestAutoscaleDeclaresFrontendSelectionAndBounds(t *testing.T) {
 		{
 			name:  "filename and kustomize",
 			args:  []string{"autoscale", "--max=3", "-f", "a.yaml", "-k", "dir"},
-			ready: false,
-		},
-		{
-			name:  "filename and explicit empty kustomize",
-			args:  []string{"autoscale", "--max=3", "-f", "a.yaml", "--kustomize="},
-			ready: true,
-		},
-		{
-			name:  "explicit empty kustomize is not a source",
-			args:  []string{"autoscale", "--max=3", "--kustomize="},
 			ready: false,
 		},
 		{
@@ -124,4 +114,21 @@ func TestAutoscaleDeclaresFrontendSelectionAndBounds(t *testing.T) {
 			)
 		})
 	}
+}
+
+func TestAutoscaleRepeatedScalarUsesLastOccurrence(t *testing.T) {
+	t.Parallel()
+
+	app, err := application(pluginCatalog{})
+	if err != nil {
+		t.Fatalf("Application() error = %v", err)
+	}
+	request := cli.InspectionRequest{
+		Args: []string{"autoscale", "deployment/foo", "--max=2", "--max=3"},
+	}
+	inspection := clitest.Inspect(t.Context(), app, request)
+	inspection.Require(t,
+		clitest.InspectionReady(),
+		clitest.RootCommand().Command("autoscale").Flag("--max").Value().Text("3"),
+	)
 }

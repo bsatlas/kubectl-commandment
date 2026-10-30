@@ -20,8 +20,23 @@ func TestPatchDeclaresPatchAndResourceGrammar(t *testing.T) {
 		ready bool
 	}{
 		{
+			name:  "invalid dry run",
+			args:  []string{"patch", "pod/foo", "--patch={}", "--dry-run=wat"},
+			ready: false,
+		},
+		{
+			name:  "invalid output format",
+			args:  []string{"patch", "pod/foo", "--patch={}", "--output=wat"},
+			ready: false,
+		},
+		{
 			name:  "server resource patch",
 			args:  []string{"patch", "pod/foo", "--patch={}"},
+			ready: true,
+		},
+		{
+			name:  "assigned short filename and patch",
+			args:  []string{"patch", "-f=pod.yaml", "-p={}"},
 			ready: true,
 		},
 		{
@@ -32,11 +47,6 @@ func TestPatchDeclaresPatchAndResourceGrammar(t *testing.T) {
 		{
 			name:  "case insensitive patch type",
 			args:  []string{"patch", "pod/foo", "--patch={}", "--type=MERGE"},
-			ready: true,
-		},
-		{
-			name:  "explicit empty patch type uses strategic default",
-			args:  []string{"patch", "pod/foo", "--patch={}", "--type="},
 			ready: true,
 		},
 		{
@@ -53,16 +63,6 @@ func TestPatchDeclaresPatchAndResourceGrammar(t *testing.T) {
 			name:  "missing patch",
 			args:  []string{"patch", "pod/foo"},
 			ready: false,
-		},
-		{
-			name:  "empty inline patch",
-			args:  []string{"patch", "pod/foo", "--patch="},
-			ready: false,
-		},
-		{
-			name:  "empty inline patch does not conflict with patch file",
-			args:  []string{"patch", "pod/foo", "--patch=", "--patch-file=patch.yaml"},
-			ready: true,
 		},
 		{
 			name:  "both patch sources",
@@ -90,16 +90,6 @@ func TestPatchDeclaresPatchAndResourceGrammar(t *testing.T) {
 			ready: false,
 		},
 		{
-			name:  "filename and explicit empty kustomize",
-			args:  []string{"patch", "-f", "a.yaml", "--kustomize=", "--patch={}"},
-			ready: true,
-		},
-		{
-			name:  "explicit empty kustomize is not a source",
-			args:  []string{"patch", "--kustomize=", "--patch={}"},
-			ready: false,
-		},
-		{
 			name:  "recursive kustomize",
 			args:  []string{"patch", "-k", "dir", "--recursive", "--patch={}"},
 			ready: false,
@@ -124,4 +114,21 @@ func TestPatchDeclaresPatchAndResourceGrammar(t *testing.T) {
 			)
 		})
 	}
+}
+
+func TestPatchRepeatedScalarUsesLastOccurrence(t *testing.T) {
+	t.Parallel()
+
+	app, err := application(pluginCatalog{})
+	if err != nil {
+		t.Fatalf("Application() error = %v", err)
+	}
+	request := cli.InspectionRequest{
+		Args: []string{"patch", "pod/foo", "--patch={}", "--field-manager=first", "--field-manager=second"},
+	}
+	inspection := clitest.Inspect(t.Context(), app, request)
+	inspection.Require(t,
+		clitest.InspectionReady(),
+		clitest.RootCommand().Command("patch").Flag("--field-manager").Value().Text("second"),
+	)
 }

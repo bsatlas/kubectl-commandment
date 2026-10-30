@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"testing"
 
 	"github.com/abstractionsinc/commandment/cli"
@@ -20,6 +21,21 @@ func TestReplaceDeclaresSourceForceAndRawGrammar(t *testing.T) {
 		ready bool
 	}{
 		{
+			name:  "invalid dry run",
+			args:  []string{"replace", "-f", "a.yaml", "--dry-run=wat"},
+			ready: false,
+		},
+		{
+			name:  "invalid output format",
+			args:  []string{"replace", "-f", "a.yaml", "--output=wat"},
+			ready: false,
+		},
+		{
+			name:  "assigned short filename",
+			args:  []string{"replace", "-f=resource.yaml"},
+			ready: true,
+		},
+		{
 			name:  "filename",
 			args:  []string{"replace", "-f", "resource.yaml"},
 			ready: true,
@@ -37,16 +53,6 @@ func TestReplaceDeclaresSourceForceAndRawGrammar(t *testing.T) {
 		{
 			name:  "filename and kustomize",
 			args:  []string{"replace", "-f", "a.yaml", "-k", "dir"},
-			ready: false,
-		},
-		{
-			name:  "filename and explicit empty kustomize",
-			args:  []string{"replace", "-f", "a.yaml", "--kustomize="},
-			ready: true,
-		},
-		{
-			name:  "explicit empty kustomize is not a source",
-			args:  []string{"replace", "--kustomize="},
 			ready: false,
 		},
 		{
@@ -131,28 +137,89 @@ func TestReplaceDeclaresSourceForceAndRawGrammar(t *testing.T) {
 	}
 }
 
-func TestReplacePreservesExplicitWaitInEffectiveDeletionPolicy(t *testing.T) {
+func TestReplaceCarriesEffectiveDeletionWaitIntoExecution(t *testing.T) {
+	t.Parallel()
+
+	var observed replaceConfig
+	definition := cli.Definition[rootConfig]{
+		Name:    "kubectl",
+		Release: kubectlRelease,
+		Declare: func(root *cli.CommandBuilder[rootConfig]) {
+			client := root.Values.Derive(
+				&root.Config.Client,
+				cli.Value.ComputedBy(func(context.Context, *rootConfig, cli.Dependencies) (clientConfig, error) {
+					return clientConfig{}, nil
+				}),
+			)
+			command := replaceCommand(client)
+			command.Run = func(_ context.Context, cfg *replaceConfig) error {
+				observed = *cfg
+				return nil
+			}
+			root.Subcommands.Command(command)
+		},
+	}
+	app := clitest.Compile(t, definition)
+	tests := []struct {
+		name               string
+		args               []string
+		wantWait           bool
+		wantGracePeriod    int
+		wantRequestedGrace int
+	}{
+		{
+			name:               "default",
+			args:               []string{"replace", "-f", "resource.yaml"},
+			wantGracePeriod:    -1,
+			wantRequestedGrace: -1,
+		},
+		{
+			name:               "explicit wait",
+			args:               []string{"replace", "-f", "resource.yaml", "--wait=true"},
+			wantWait:           true,
+			wantGracePeriod:    -1,
+			wantRequestedGrace: -1,
+		},
+		{
+			name:               "zero grace forces wait",
+			args:               []string{"replace", "-f", "resource.yaml", "--grace-period=0", "--force", "--wait=false"},
+			wantWait:           true,
+			wantGracePeriod:    1,
+			wantRequestedGrace: 0,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			observed = replaceConfig{}
+			if err := app.Run(t.Context(), cli.RunRequest{Args: test.args}); err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			if observed.WaitForDeletion != test.wantWait {
+				t.Fatalf("WaitForDeletion = %v, want %v", observed.WaitForDeletion, test.wantWait)
+			}
+			if observed.GracePeriod != test.wantGracePeriod {
+				t.Fatalf("GracePeriod = %d, want %d", observed.GracePeriod, test.wantGracePeriod)
+			}
+			if observed.RequestedGrace != test.wantRequestedGrace {
+				t.Fatalf("RequestedGrace = %d, want %d", observed.RequestedGrace, test.wantRequestedGrace)
+			}
+		})
+	}
+}
+
+func TestReplaceRepeatedScalarUsesLastOccurrence(t *testing.T) {
 	t.Parallel()
 
 	app, err := application(pluginCatalog{})
 	if err != nil {
 		t.Fatalf("Application() error = %v", err)
 	}
-	command := clitest.Command("replace")
-	requestedGrace := command.Flag("--grace-period").Value()
-	wait := command.Flag("--wait").Value()
-	effectiveWait := command.ValueAt(20)
-
-	clitest.Schema(app).Require(t,
-		effectiveWait.DependenciesExactly(wait, requestedGrace),
-	)
 	request := cli.InspectionRequest{
-		Args: []string{"replace", "-f", "resource.yaml", "--wait=true"},
+		Args: []string{"replace", "-f", "a.yaml", "--field-manager=first", "--field-manager=second"},
 	}
-	clitest.Inspect(t.Context(), app, request).Require(t,
+	inspection := clitest.Inspect(t.Context(), app, request)
+	inspection.Require(t,
 		clitest.InspectionReady(),
-		effectiveWait.Resolved(),
-		effectiveWait.ContributedBy(cli.ValueProducerKindDerived),
-		effectiveWait.Text("true"),
+		clitest.RootCommand().Command("replace").Flag("--field-manager").Value().Text("second"),
 	)
 }

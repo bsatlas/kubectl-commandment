@@ -16,12 +16,9 @@ import (
 
 func runScale(_ context.Context, cfg *scaleConfig) error {
 	factory := cfg.Client.factory()
-	dryRun, err := dryRunStrategy(cfg.DryRun)
-	if err != nil {
-		return err
-	}
+	dryRun := cfg.DryRun
 	printFlags := genericclioptions.NewPrintFlags("scaled")
-	configurePrintFlags(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
+	configurePrintFlagsWithOutputState(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields, cfg.OutputState)
 	util.PrintFlagsWithDryRunStrategy(printFlags, dryRun)
 	printer, err := printFlags.ToPrinter()
 	if err != nil {
@@ -43,9 +40,9 @@ func runScale(_ context.Context, cfg *scaleConfig) error {
 	}
 
 	filenameOptions := resource.FilenameOptions{
-		Filenames: cfg.Filename,
-		Kustomize: cfg.Kustomize,
-		Recursive: cfg.Recursive,
+		Filenames: cfg.Filename.Filenames(),
+		Kustomize: cfg.Filename.Kustomize,
+		Recursive: cfg.Filename.Recursive,
 	}
 	result := factory.NewBuilder().
 		Unstructured().

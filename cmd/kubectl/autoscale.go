@@ -10,6 +10,7 @@ import (
 	"k8s.io/api/autoscaling/v2"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/cli-runtime/pkg/genericiooptions"
+	"k8s.io/kubectl/pkg/cmd/util"
 )
 
 type autoscaleMetricTarget struct {
@@ -26,17 +27,16 @@ type autoscaleConfig struct {
 	AllowMissingTemplateKeys bool
 	CPU                      autoscaleMetricTarget
 	CPUPercent               int32
-	DryRun                   string
+	DryRun                   util.DryRunStrategy
 	FieldManager             string
-	Filename                 []string
-	Kustomize                string
+	Filename                 filenameOptions
 	Max                      int32
 	Memory                   autoscaleMetricTarget
 	Min                      int32
 	Name                     string
 	Output                   string
+	OutputState              cli.OptionalValue[cli.ValueState]
 	Record                   bool
-	Recursive                bool
 	SaveConfig               bool
 	ShowManagedFields        bool
 	Template                 string
@@ -52,7 +52,7 @@ func autoscaleMetricTargetLanguage(resourceName string) cli.ValueCodec[autoscale
 			}
 			quantity, utilization, metricType, err := parseAutoscaleResource(text, resourceName)
 			if err != nil {
-				return autoscaleMetricTarget{}, cli.Rejection.Message(name, err.Error(), cli.Rejection.At(0, 0, len(text)))
+				return autoscaleMetricTarget{}, cli.Rejection.Message(cli.InputRejectionCode(name), err.Error(), cli.Rejection.At(0, 0, len(text)))
 			}
 			target := autoscaleMetricTarget{
 				Text:        text,
@@ -114,94 +114,89 @@ func autoscaleCommand(client cli.Destination[rootConfig, clientConfig]) cli.Comm
 					From(client)
 			})
 
-			allowMissingTemplateKeysFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.AllowMissingTemplateKeys))
-			allowMissingTemplateKeysFlag.Description("If true, ignore any errors in templates when a field or map key is missing in the template. Only applies to golang and jsonpath output formats.")
-			cb.Values.Default(allowMissingTemplateKeysFlag, true)
-			allowMissingTemplateKeysFlag.Long("allow-missing-template-keys").ImplicitValue(true)
+			declarePrintFlags(cb, &cb.Config.Output, &cb.Config.OutputState, &cb.Config.Template, &cb.Config.AllowMissingTemplateKeys, &cb.Config.ShowManagedFields)
 
 			cpu := cb.Values.Value(&cb.Config.CPU, autoscaleMetricTargetLanguage("cpu"))
 			cpuFlag := cb.Flags.ValueFor(cpu)
+			cb.Values.ResolveWith(cpuFlag, cli.Value.KeepLast())
 			cpuFlag.Description("Target CPU utilization over all the pods. When specified as a percentage (e.g.\"70%\" for 70% of requested CPU) it will target average utilization. When specified as quantity (e.g.\"500m\" for 500 milliCPU) it will target average value. Value without units is treated as a quantity with miliCPU being the unit (e.g.\"500\" is \"500m\").")
 			cpuFlag.Long("cpu")
 
 			cpuPercent := cb.Values.Value(&cb.Config.CPUPercent, int32Language())
 			cpuPercentFlag := cb.Flags.ValueFor(cpuPercent)
+			cb.Values.ResolveWith(cpuPercentFlag, cli.Value.KeepLast())
 			cpuPercentFlag.Description("The target average CPU utilization (represented as a percent of requested CPU) over all the pods. If it's not specified or negative, a default autoscaling policy will be used.")
 			cb.Values.Default(cpuPercent, int32(-1))
 			cpuPercentFlag.Hidden().Release(preexistingDeprecation("Use --cpu with percentage or resource quantity format (e.g., '70%' for utilization or '500m' for milliCPU)."))
 			cpuPercentFlag.Long("cpu-percent")
 
-			dryRunFlag := cb.Flags.String(&cb.Config.DryRun)
+			dryRun := cb.Values.Value(&cb.Config.DryRun, dryRunValueLanguage)
+			dryRunFlag := cb.Flags.ValueFor(dryRun)
+			cb.Values.ResolveWith(dryRunFlag, cli.Value.KeepLast())
 			dryRunFlag.Description("Must be \"none\", \"server\", or \"client\". If client strategy, only print the object that would be sent, without sending it. If server strategy, submit server-side request without persisting the resource.")
-			cb.Values.Default(dryRunFlag, "none")
-			dryRunFlagLong := dryRunFlag.Long("dry-run")
-			dryRunFlagLong.ImplicitValue("unchanged")
+			cb.Values.Default(dryRun, util.DryRunNone)
+			dryRunFlag.Long("dry-run").ImplicitValue(util.DryRunClient)
 
 			fieldManagerFlag := cb.Flags.String(&cb.Config.FieldManager)
+			cb.Values.ResolveWith(fieldManagerFlag, cli.Value.KeepLast())
 			fieldManagerFlag.Description("Name of the manager used to track field ownership.")
 			cb.Values.Default(fieldManagerFlag, "kubectl-autoscale")
 			fieldManagerFlag.Long("field-manager")
 
-			filenameValue := cb.Values.Sequence(&cb.Config.Filename, cli.Value.String())
+			filenameValue := cb.Values.Sequence(&cb.Config.Filename.Groups, filenameListLanguage)
 			filenameFlag := cb.Flags.Sequence(filenameValue)
-			filenameFlag.DelimitedBy(",")
 			filenameFlag.Description("Filename, directory, or URL to files identifying the resource to autoscale.")
 			filenameFlag.Long("filename")
-			filenameFlag.Short('f')
+			filenameFlag.Short('f').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
-			kustomize := cb.Values.String(&cb.Config.Kustomize)
+			kustomize := cb.Values.String(&cb.Config.Filename.Kustomize)
 			kustomizeFlag := cb.Flags.ValueFor(kustomize)
+			cb.Values.ResolveWith(kustomizeFlag, cli.Value.KeepLast())
 			kustomizeFlag.Description("Process the kustomization directory. This flag can't be used together with -f or -R.")
 			kustomizeFlag.Long("kustomize")
-			kustomizeFlag.Short('k')
+			kustomizeFlag.Short('k').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
 			maxPods := cb.Values.Value(&cb.Config.Max, int32Language())
 			maxFlag := cb.Flags.ValueFor(maxPods)
+			cb.Values.ResolveWith(maxFlag, cli.Value.KeepLast())
 			maxFlag.Description("The upper limit for the number of pods that can be set by the autoscaler. Required.")
 			maxFlag.Long("max")
 
 			memory := cb.Values.Value(&cb.Config.Memory, autoscaleMetricTargetLanguage("memory"))
 			memoryFlag := cb.Flags.ValueFor(memory)
+			cb.Values.ResolveWith(memoryFlag, cli.Value.KeepLast())
 			memoryFlag.Description("Target memory utilization over all the pods. When specified  as a percentage (e.g.\"60%\" for 60% of requested memory) it will target average utilization. When specified as quantity (e.g.\"200Mi\" for 200 MiB, \"1Gi\" for 1 GiB) it will target average value. Value without units is treated as a quantity with mebibytes being the unit (e.g.\"200\" is \"200Mi\").")
 			memoryFlag.Long("memory")
 
 			minPods := cb.Values.Value(&cb.Config.Min, int32Language())
 			minFlag := cb.Flags.ValueFor(minPods)
+			cb.Values.ResolveWith(minFlag, cli.Value.KeepLast())
 			minFlag.Description("The lower limit for the number of pods that can be set by the autoscaler. If it's not specified or negative, the server will apply a default value.")
 			cb.Values.Default(minPods, int32(-1))
 			minFlag.Long("min")
 
 			nameFlag := cb.Flags.String(&cb.Config.Name)
+			cb.Values.ResolveWith(nameFlag, cli.Value.KeepLast())
 			nameFlag.Description("The name for the newly created object. If not specified, the name of the input resource will be used.")
 			nameFlag.Long("name")
 
-			outputFlag := cb.Flags.String(&cb.Config.Output)
-			outputFlag.Description("Output format. One of: (json, yaml, kyaml, name, go-template, go-template-file, template, templatefile, jsonpath, jsonpath-as-json, jsonpath-file).")
-			outputFlag.Long("output")
-			outputFlag.Short('o')
-
 			recordFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Record))
+			cb.Values.ResolveWith(recordFlag, cli.Value.KeepLast())
 			recordFlag.Description("Record current kubectl command in the resource annotation. If set to false, do not record the command. If set to true, record the command. If not set, default to updating the existing annotation value only if one already exists.")
 			recordFlag.Hidden().Release(preexistingDeprecation("--record will be removed in the future"))
 			recordFlag.Long("record").ImplicitValue(true)
 
-			recursive := cb.Values.Bool(&cb.Config.Recursive)
+			recursive := cb.Values.Bool(&cb.Config.Filename.Recursive)
 			recursiveFlag := cb.Flags.ValueFor(recursive)
+			cb.Values.ResolveWith(recursiveFlag, cli.Value.KeepLast())
 			recursiveFlag.Description("Process the directory used in -f, --filename recursively. Useful when you want to manage related manifests organized within the same directory.")
 			recursiveFlag.Long("recursive").ImplicitValue(true)
 			recursiveFlag.Short('R').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
 
 			saveConfigFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.SaveConfig))
+			cb.Values.ResolveWith(saveConfigFlag, cli.Value.KeepLast())
 			saveConfigFlag.Description("If true, the configuration of current object will be saved in its annotation. Otherwise, the annotation will be unchanged. This flag is useful when you want to perform kubectl apply on this object in the future.")
 			saveConfigFlag.Long("save-config").ImplicitValue(true)
-
-			showManagedFieldsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowManagedFields))
-			showManagedFieldsFlag.Description("If true, keep the managedFields when printing objects in JSON or YAML format.")
-			showManagedFieldsFlag.Long("show-managed-fields").ImplicitValue(true)
-
-			templateFlag := cb.Flags.String(&cb.Config.Template)
-			templateFlag.Description("Template string or path to template file to use when -o=go-template, -o=go-template-file. The template format is golang templates [http://golang.org/pkg/text/template/#pkg-overview].")
-			templateFlag.Long("template")
 
 			cb.Rule.Require(maxPods)
 			cb.Rule.AtLeast(maxPods, int32(1))
@@ -213,8 +208,8 @@ func autoscaleCommand(client cli.Destination[rootConfig, clientConfig]) cli.Comm
 				DependsOn(cpu.OptionalDependency())
 			cb.Rule.When(cb.When.Equal(recursive, true)).Equal(kustomize, "")
 			cb.Rule.Check("kubectl-autoscale-source", func(_ context.Context, cfg *autoscaleConfig, _ cli.Dependencies) (bool, error) {
-				hasFilename := len(cfg.Filename) > 0
-				hasKustomize := cfg.Kustomize != ""
+				hasFilename := len(cfg.Filename.Filenames()) > 0
+				hasKustomize := cfg.Filename.Kustomize != ""
 				if hasFilename && hasKustomize {
 					return false, nil
 				}

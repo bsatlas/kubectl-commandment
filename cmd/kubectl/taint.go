@@ -10,6 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/cli-runtime/pkg/genericiooptions"
+	"k8s.io/kubectl/pkg/cmd/util"
 )
 
 type taintOperands struct {
@@ -137,9 +138,10 @@ type taintConfig struct {
 	Operands                 taintOperands
 	All                      bool
 	AllowMissingTemplateKeys bool
-	DryRun                   string
+	DryRun                   util.DryRunStrategy
 	FieldManager             string
 	Output                   string
+	OutputState              cli.OptionalValue[cli.ValueState]
 	Overwrite                bool
 	Selector                 string
 	ShowManagedFields        bool
@@ -200,39 +202,36 @@ func taintCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[
 
 			all := cb.Values.Bool(&cb.Config.All)
 			allFlag := cb.Flags.ValueFor(all)
+			cb.Values.ResolveWith(allFlag, cli.Value.KeepLast())
 			allFlag.Description("Select all nodes in the cluster")
 			allFlag.Long("all").ImplicitValue(true)
 
-			allowMissingTemplateKeysFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.AllowMissingTemplateKeys))
-			allowMissingTemplateKeysFlag.Description("If true, ignore any errors in templates when a field or map key is missing in the template. Only applies to golang and jsonpath output formats.")
-			cb.Values.Default(allowMissingTemplateKeysFlag, true)
-			allowMissingTemplateKeysFlag.Long("allow-missing-template-keys").ImplicitValue(true)
+			declarePrintFlags(cb, &cb.Config.Output, &cb.Config.OutputState, &cb.Config.Template, &cb.Config.AllowMissingTemplateKeys, &cb.Config.ShowManagedFields)
 
-			dryRunFlag := cb.Flags.String(&cb.Config.DryRun)
+			dryRun := cb.Values.Value(&cb.Config.DryRun, dryRunValueLanguage)
+			dryRunFlag := cb.Flags.ValueFor(dryRun)
+			cb.Values.ResolveWith(dryRunFlag, cli.Value.KeepLast())
 			dryRunFlag.Description("Must be \"none\", \"server\", or \"client\". If client strategy, only print the object that would be sent, without sending it. If server strategy, submit server-side request without persisting the resource.")
-			cb.Values.Default(dryRunFlag, "none")
-			dryRunFlagLong := dryRunFlag.Long("dry-run")
-			dryRunFlagLong.ImplicitValue("unchanged")
+			cb.Values.Default(dryRun, util.DryRunNone)
+			dryRunFlag.Long("dry-run").ImplicitValue(util.DryRunClient)
 
 			fieldManagerFlag := cb.Flags.String(&cb.Config.FieldManager)
+			cb.Values.ResolveWith(fieldManagerFlag, cli.Value.KeepLast())
 			fieldManagerFlag.Description("Name of the manager used to track field ownership.")
 			cb.Values.Default(fieldManagerFlag, "kubectl-taint")
 			fieldManagerFlag.Long("field-manager")
 
-			outputFlag := cb.Flags.String(&cb.Config.Output)
-			outputFlag.Description("Output format. One of: (json, yaml, kyaml, name, go-template, go-template-file, template, templatefile, jsonpath, jsonpath-as-json, jsonpath-file).")
-			outputFlag.Long("output")
-			outputFlag.Short('o')
-
 			overwriteFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Overwrite))
+			cb.Values.ResolveWith(overwriteFlag, cli.Value.KeepLast())
 			overwriteFlag.Description("If true, allow taints to be overwritten, otherwise reject taint updates that overwrite existing taints.")
 			overwriteFlag.Long("overwrite").ImplicitValue(true)
 
 			selector := cb.Values.String(&cb.Config.Selector)
 			selectorFlag := cb.Flags.ValueFor(selector)
+			cb.Values.ResolveWith(selectorFlag, cli.Value.KeepLast())
 			selectorFlag.Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
 			selectorFlag.Long("selector")
-			selectorFlag.Short('l')
+			selectorFlag.Short('l').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
 			cb.Rule.When(cb.When.Equal(all, true)).Equal(selector, "")
 			cb.Rule.Check("kubectl-taint-resource", func(_ context.Context, cfg *taintConfig, _ cli.Dependencies) (bool, error) {
@@ -251,15 +250,8 @@ func taintCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[
 				DependsOn(all.OptionalDependency()).
 				DependsOn(selector.OptionalDependency())
 
-			showManagedFieldsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowManagedFields))
-			showManagedFieldsFlag.Description("If true, keep the managedFields when printing objects in JSON or YAML format.")
-			showManagedFieldsFlag.Long("show-managed-fields").ImplicitValue(true)
-
-			templateFlag := cb.Flags.String(&cb.Config.Template)
-			templateFlag.Description("Template string or path to template file to use when -o=go-template, -o=go-template-file. The template format is golang templates [http://golang.org/pkg/text/template/#pkg-overview].")
-			templateFlag.Long("template")
-
 			validateFlag := cb.Flags.String(&cb.Config.Validate)
+			cb.Values.ResolveWith(validateFlag, cli.Value.KeepLast())
 			validateFlag.Description("Must be one of: strict (or true), warn, ignore (or false). \"true\" or \"strict\" will use a schema to validate the input and fail the request if invalid. It will perform server side validation if ServerSideFieldValidation is enabled on the api-server, but will fall back to less reliable client-side validation if not. \"warn\" will warn about unknown or duplicate fields without blocking the request if server-side field validation is enabled on the API server, and behave as \"ignore\" otherwise. \"false\" or \"ignore\" will not perform any schema validation, silently dropping any unknown or duplicate fields.")
 			cb.Values.Default(validateFlag, "strict")
 			validateFlagLong := validateFlag.Long("validate")

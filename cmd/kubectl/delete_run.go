@@ -19,7 +19,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -36,9 +35,9 @@ func runDelete(_ context.Context, cfg *deleteConfig) error {
 		return err
 	}
 	flags := delete.NewDeleteCommandFlags("containing the resource to delete.")
-	*flags.FileNameFlags.Filenames = slices.Clone(cfg.Filename)
-	*flags.FileNameFlags.Kustomize = cfg.Kustomize
-	*flags.FileNameFlags.Recursive = cfg.Recursive
+	*flags.FileNameFlags.Filenames = cfg.Filename.Filenames()
+	*flags.FileNameFlags.Kustomize = cfg.Filename.Kustomize
+	*flags.FileNameFlags.Recursive = cfg.Filename.Recursive
 	*flags.LabelSelector = cfg.Selector
 	*flags.FieldSelector = cfg.FieldSelector
 	*flags.All = cfg.All
@@ -62,10 +61,7 @@ func runDelete(_ context.Context, cfg *deleteConfig) error {
 		fmt.Fprintln(options.ErrOut, warning)
 	}
 
-	strategy, err := dryRunStrategy(cfg.DryRun)
-	if err != nil {
-		return err
-	}
+	strategy := cfg.DryRun
 	options.DryRunStrategy = strategy
 	warningOptions := printers.WarningPrinterOptions{
 		Color: printers.AllowsColorOutput(options.ErrOut),
@@ -103,7 +99,7 @@ func runDelete(_ context.Context, cfg *deleteConfig) error {
 			}
 			var infos []*resource.Info
 			if options.IgnoreNotFound {
-				preview = preview.IgnoreErrors(func(err error) bool {
+				preview.IgnoreErrors(func(err error) bool {
 					return errors.IsNotFound(err)
 				})
 			}

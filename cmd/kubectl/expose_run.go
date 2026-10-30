@@ -19,8 +19,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"slices"
-	"strconv"
+	"maps"
 	"strings"
 
 	"k8s.io/api/core/v1"
@@ -39,18 +38,14 @@ import (
 
 type serviceExposure struct {
 	defaultName string
-	selector    string
-	labels      string
-	port        string
-	ports       string
-	protocols   string
+	selector    map[string]string
+	labels      map[string]string
+	ports       []exposePort
+	protocols   map[string][]string
 }
 
 func runExpose(_ context.Context, cfg *exposeConfig) error {
-	strategy, err := dryRunStrategy(cfg.DryRun)
-	if err != nil {
-		return err
-	}
+	strategy := cfg.DryRun
 
 	factory := cfg.Client.factory()
 	namespace, enforceNamespace, err := factory.ToRawKubeConfigLoader().Namespace()
@@ -63,9 +58,9 @@ func runExpose(_ context.Context, cfg *exposeConfig) error {
 	}
 
 	filename := resource.FilenameOptions{
-		Filenames: slices.Clone(cfg.Filename),
-		Kustomize: cfg.Kustomize,
-		Recursive: cfg.Recursive,
+		Filenames: cfg.Filename.Filenames(),
+		Kustomize: cfg.Filename.Kustomize,
+		Recursive: cfg.Filename.Recursive,
 	}
 	result := factory.NewBuilder().
 		WithScheme(scheme.Scheme, scheme.Scheme.PrioritizedVersionsAllGroups()...).
@@ -80,7 +75,7 @@ func runExpose(_ context.Context, cfg *exposeConfig) error {
 	}
 
 	printFlags := genericclioptions.NewPrintFlags("exposed").WithTypeSetter(scheme.Scheme)
-	configurePrintFlags(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
+	configurePrintFlagsWithOutputState(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields, cfg.OutputState)
 	util.PrintFlagsWithDryRunStrategy(printFlags, strategy)
 	printer, err := printFlags.ToPrinter()
 	if err != nil {
@@ -111,53 +106,55 @@ func runExpose(_ context.Context, cfg *exposeConfig) error {
 		if len(defaultName) > validation.DNS1035LabelMaxLength {
 			defaultName = defaultName[:validation.DNS1035LabelMaxLength]
 		}
-		selector := cfg.Selector
-		if selector == "" {
-			selector, err = polymorphichelpers.MapBasedSelectorForObjectFn(info.Object)
+		selector := cfg.Selector.Values
+		if cfg.Selector.Text == "" {
+			discovered, err := polymorphichelpers.MapBasedSelectorForObjectFn(info.Object)
 			if err != nil {
 				return fmt.Errorf("couldn't retrieve selectors via --selector flag or introspection: %v", err)
 			}
+			parsed, err := parseExposeLabelSet(discovered)
+			if err != nil {
+				return err
+			}
+			selector = parsed.Values
 		}
 
-		port := cfg.Port
-		ports := ""
-		if port == "" {
+		ports := cfg.Port.Values
+		if cfg.Port.Text == "" {
 			discovered, err := polymorphichelpers.PortsForObjectFn(info.Object)
 			if err != nil {
 				return fmt.Errorf("couldn't find port via --port flag or introspection: %v", err)
 			}
-			switch len(discovered) {
-			case 0:
-				if cfg.ClusterIP != "None" {
-					return fmt.Errorf("couldn't find port via --port flag or introspection")
+			if len(discovered) == 0 && cfg.ClusterIP != "None" {
+				return fmt.Errorf("couldn't find port via --port flag or introspection")
+			}
+			if len(discovered) > 0 {
+				parsed, err := parseExposePortSet(strings.Join(discovered, ","))
+				if err != nil {
+					return err
 				}
-			case 1:
-				port = discovered[0]
-			default:
-				ports = strings.Join(discovered, ",")
+				ports = parsed.Values
 			}
 		}
 
-		protocolMap, err := polymorphichelpers.MultiProtocolsForObjectFn(info.Object)
+		protocols, err := polymorphichelpers.MultiProtocolsForObjectFn(info.Object)
 		if err != nil {
 			return fmt.Errorf("couldn't find protocol via introspection: %v", err)
 		}
-		protocols := exposeProtocols(protocolMap)
 
-		labels := cfg.Labels
-		if labels == "" {
+		labels := cfg.Labels.Values
+		if cfg.Labels.Text == "" {
 			objectLabels, err := meta.NewAccessor().Labels(info.Object)
 			if err != nil {
 				return err
 			}
-			labels = polymorphichelpers.MakeLabels(objectLabels)
+			labels = maps.Clone(objectLabels)
 		}
 
 		exposure := serviceExposure{
 			defaultName: defaultName,
 			selector:    selector,
 			labels:      labels,
-			port:        port,
 			ports:       ports,
 			protocols:   protocols,
 		}
@@ -165,7 +162,7 @@ func runExpose(_ context.Context, cfg *exposeConfig) error {
 		if err != nil {
 			return err
 		}
-		overridden, err := applyOverrides(service, &v1.Service{}, cfg.Overrides, cfg.OverrideType)
+		overridden, err := applyOverrides(service, &v1.Service{}, cfg.Overrides, string(cfg.OverrideType))
 		if err != nil {
 			return err
 		}
@@ -211,18 +208,6 @@ func runExpose(_ context.Context, cfg *exposeConfig) error {
 }
 
 func newExposedService(cfg *exposeConfig, exposure serviceExposure) (*v1.Service, error) {
-	selector, err := parseExposeLabels(exposure.selector)
-	if err != nil {
-		return nil, err
-	}
-	var labels map[string]string
-	if exposure.labels != "" {
-		labels, err = parseExposeLabels(exposure.labels)
-		if err != nil {
-			return nil, err
-		}
-	}
-
 	name := cfg.Name
 	if name == "" {
 		name = exposure.defaultName
@@ -231,62 +216,44 @@ func newExposedService(cfg *exposeConfig, exposure serviceExposure) (*v1.Service
 		return nil, fmt.Errorf("name must be specified")
 	}
 
-	var protocolMap map[string][]string
-	if exposure.protocols != "" {
-		protocolMap, err = parseExposeProtocols(exposure.protocols)
-		if err != nil {
-			return nil, err
-		}
-	}
-	portSpec := exposure.ports
-	if portSpec == "" {
-		portSpec = exposure.port
-	}
 	var servicePorts []v1.ServicePort
-	if portSpec != "" {
-		items := strings.Split(portSpec, ",")
-		for index, item := range items {
-			value, err := strconv.Atoi(item)
-			if err != nil {
-				return nil, err
-			}
-			portName := ""
-			if len(items) > 1 {
-				portName = fmt.Sprintf("port-%d", index+1)
-			}
-			protocol := cfg.Protocol
-			switch {
-			case protocol == "" && len(protocolMap) == 0:
-				protocol = "TCP"
-			case protocol == "" && len(protocolMap) > 0:
-				protocol = "TCP"
-				if values, ok := protocolMap[item]; ok {
-					if len(values) == 1 {
-						protocol = values[0]
-					} else {
-						for _, candidate := range values {
-							servicePorts = append(servicePorts, v1.ServicePort{
-								Name:     fmt.Sprintf("port-%d-%s", index+1, strings.ToLower(candidate)),
-								Port:     int32(value),
-								Protocol: v1.Protocol(candidate),
-							})
-						}
-						continue
+	for index, port := range exposure.ports {
+		portName := ""
+		if len(exposure.ports) > 1 {
+			portName = fmt.Sprintf("port-%d", index+1)
+		}
+		protocol := cfg.Protocol
+		switch {
+		case protocol == "" && len(exposure.protocols) == 0:
+			protocol = "TCP"
+		case protocol == "" && len(exposure.protocols) > 0:
+			protocol = "TCP"
+			if values, ok := exposure.protocols[port.Text]; ok {
+				if len(values) == 1 {
+					protocol = values[0]
+				} else {
+					for _, candidate := range values {
+						servicePorts = append(servicePorts, v1.ServicePort{
+							Name:     fmt.Sprintf("port-%d-%s", index+1, strings.ToLower(candidate)),
+							Port:     port.Number,
+							Protocol: v1.Protocol(candidate),
+						})
 					}
+					continue
 				}
 			}
-			servicePorts = append(servicePorts, v1.ServicePort{
-				Name:     portName,
-				Port:     int32(value),
-				Protocol: v1.Protocol(protocol),
-			})
 		}
+		servicePorts = append(servicePorts, v1.ServicePort{
+			Name:     portName,
+			Port:     port.Number,
+			Protocol: v1.Protocol(protocol),
+		})
 	}
 
 	service := &v1.Service{}
 	service.Name = name
-	service.Labels = labels
-	service.Spec.Selector = selector
+	service.Labels = maps.Clone(exposure.labels)
+	service.Spec.Selector = maps.Clone(exposure.selector)
 	service.Spec.Ports = servicePorts
 	for index := range service.Spec.Ports {
 		if cfg.TargetPort != "" {
@@ -305,60 +272,10 @@ func newExposedService(cfg *exposeConfig, exposure serviceExposure) (*v1.Service
 		service.Spec.LoadBalancerIP = cfg.LoadBalancerIP
 	}
 	if cfg.SessionAffinity != "" {
-		switch v1.ServiceAffinity(cfg.SessionAffinity) {
-		case v1.ServiceAffinityNone:
-			service.Spec.SessionAffinity = v1.ServiceAffinityNone
-		case v1.ServiceAffinityClientIP:
-			service.Spec.SessionAffinity = v1.ServiceAffinityClientIP
-		default:
-			return nil, fmt.Errorf("unknown session affinity: %s", cfg.SessionAffinity)
-		}
+		service.Spec.SessionAffinity = cfg.SessionAffinity
 	}
 	if cfg.ClusterIP != "" {
 		service.Spec.ClusterIP = cfg.ClusterIP
 	}
 	return service, nil
-}
-
-func parseExposeLabels(spec string) (map[string]string, error) {
-	if spec == "" {
-		return nil, fmt.Errorf("no label spec passed")
-	}
-	result := make(map[string]string)
-	for item := range strings.SplitSeq(spec, ",") {
-		key, value, ok := strings.Cut(item, "=")
-		if !ok {
-			return nil, fmt.Errorf("unexpected label spec: %s", item)
-		}
-		if key == "" {
-			return nil, fmt.Errorf("unexpected empty label key")
-		}
-		result[key] = value
-	}
-	return result, nil
-}
-
-func exposeProtocols(protocols map[string][]string) string {
-	var values []string
-	for port, candidates := range protocols {
-		for _, protocol := range candidates {
-			values = append(values, fmt.Sprintf("%s/%s", port, protocol))
-		}
-	}
-	return strings.Join(values, ",")
-}
-
-func parseExposeProtocols(spec string) (map[string][]string, error) {
-	if spec == "" {
-		return nil, fmt.Errorf("no protocols passed")
-	}
-	result := make(map[string][]string)
-	for item := range strings.SplitSeq(spec, ",") {
-		port, protocol, ok := strings.Cut(item, "/")
-		if !ok || port == "" || protocol == "" {
-			return nil, fmt.Errorf("unexpected port protocol mapping: %s", item)
-		}
-		result[port] = append(result[port], protocol)
-	}
-	return result, nil
 }

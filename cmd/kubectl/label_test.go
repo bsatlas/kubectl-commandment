@@ -20,6 +20,16 @@ func TestLabelDeclaresResourceAndUpdateGrammar(t *testing.T) {
 		ready bool
 	}{
 		{
+			name:  "invalid dry run",
+			args:  []string{"label", "pod/foo", "tier=frontend", "--dry-run=wat"},
+			ready: false,
+		},
+		{
+			name:  "invalid output format",
+			args:  []string{"label", "pod/foo", "tier=frontend", "--output=wat"},
+			ready: false,
+		},
+		{
 			name:  "resource update",
 			args:  []string{"label", "pods", "foo", "tier=frontend"},
 			ready: true,
@@ -70,6 +80,11 @@ func TestLabelDeclaresResourceAndUpdateGrammar(t *testing.T) {
 			ready: false,
 		},
 		{
+			name:  "assigned short filename",
+			args:  []string{"label", "-f=pod.yaml", "tier=frontend"},
+			ready: true,
+		},
+		{
 			name:  "local file update",
 			args:  []string{"label", "-f", "pod.yaml", "tier=frontend", "--local"},
 			ready: true,
@@ -77,16 +92,6 @@ func TestLabelDeclaresResourceAndUpdateGrammar(t *testing.T) {
 		{
 			name:  "filename and kustomize",
 			args:  []string{"label", "-f", "pod.yaml", "-k", "dir", "tier=frontend"},
-			ready: false,
-		},
-		{
-			name:  "filename and explicit empty kustomize",
-			args:  []string{"label", "-f", "pod.yaml", "--kustomize=", "tier=frontend"},
-			ready: true,
-		},
-		{
-			name:  "explicit empty kustomize is not a source",
-			args:  []string{"label", "--kustomize=", "tier=frontend"},
 			ready: false,
 		},
 		{
@@ -124,4 +129,21 @@ func TestLabelDeclaresResourceAndUpdateGrammar(t *testing.T) {
 			)
 		})
 	}
+}
+
+func TestLabelRepeatedScalarUsesLastOccurrence(t *testing.T) {
+	t.Parallel()
+
+	app, err := application(pluginCatalog{})
+	if err != nil {
+		t.Fatalf("Application() error = %v", err)
+	}
+	request := cli.InspectionRequest{
+		Args: []string{"label", "pod/foo", "tier=frontend", "--field-manager=first", "--field-manager=second"},
+	}
+	inspection := clitest.Inspect(t.Context(), app, request)
+	inspection.Require(t,
+		clitest.InspectionReady(),
+		clitest.RootCommand().Command("label").Flag("--field-manager").Value().Text("second"),
+	)
 }

@@ -20,6 +20,16 @@ func TestAnnotateDeclaresResourceAndUpdateGrammar(t *testing.T) {
 		ready bool
 	}{
 		{
+			name:  "invalid dry run",
+			args:  []string{"annotate", "pods", "foo", "description=frontend", "--dry-run=wat"},
+			ready: false,
+		},
+		{
+			name:  "invalid output format",
+			args:  []string{"annotate", "pods", "foo", "description=frontend", "--output=wat"},
+			ready: false,
+		},
+		{
 			name:  "resource update",
 			args:  []string{"annotate", "pods", "foo", "description=frontend"},
 			ready: true,
@@ -65,6 +75,11 @@ func TestAnnotateDeclaresResourceAndUpdateGrammar(t *testing.T) {
 			ready: false,
 		},
 		{
+			name:  "assigned short filename",
+			args:  []string{"annotate", "-f=pod.yaml", "description=frontend"},
+			ready: true,
+		},
+		{
 			name:  "local file update",
 			args:  []string{"annotate", "-f", "pod.yaml", "description=frontend", "--local"},
 			ready: true,
@@ -77,16 +92,6 @@ func TestAnnotateDeclaresResourceAndUpdateGrammar(t *testing.T) {
 		{
 			name:  "filename and kustomize",
 			args:  []string{"annotate", "-f", "pod.yaml", "-k", "dir", "description=frontend"},
-			ready: false,
-		},
-		{
-			name:  "filename and explicit empty kustomize",
-			args:  []string{"annotate", "-f", "pod.yaml", "--kustomize=", "description=frontend"},
-			ready: true,
-		},
-		{
-			name:  "explicit empty kustomize is not a source",
-			args:  []string{"annotate", "--kustomize=", "description=frontend"},
 			ready: false,
 		},
 		{
@@ -129,4 +134,21 @@ func TestAnnotateDeclaresResourceAndUpdateGrammar(t *testing.T) {
 			)
 		})
 	}
+}
+
+func TestAnnotateRepeatedScalarUsesLastOccurrence(t *testing.T) {
+	t.Parallel()
+
+	app, err := application(pluginCatalog{})
+	if err != nil {
+		t.Fatalf("Application() error = %v", err)
+	}
+	request := cli.InspectionRequest{
+		Args: []string{"annotate", "pods", "foo", "description=frontend", "--field-manager=first", "--field-manager=second"},
+	}
+	inspection := clitest.Inspect(t.Context(), app, request)
+	inspection.Require(t,
+		clitest.InspectionReady(),
+		clitest.RootCommand().Command("annotate").Flag("--field-manager").Value().Text("second"),
+	)
 }

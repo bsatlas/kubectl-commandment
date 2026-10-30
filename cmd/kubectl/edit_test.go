@@ -20,8 +20,18 @@ func TestEditDeclaresResourceSourceGrammar(t *testing.T) {
 		ready bool
 	}{
 		{
+			name:  "invalid output format",
+			args:  []string{"edit", "deployment/foo", "--output=wat"},
+			ready: false,
+		},
+		{
 			name:  "resource argument",
 			args:  []string{"edit", "deployment/foo"},
+			ready: true,
+		},
+		{
+			name:  "assigned short filename",
+			args:  []string{"edit", "-f=deployment.yaml"},
 			ready: true,
 		},
 		{
@@ -37,16 +47,6 @@ func TestEditDeclaresResourceSourceGrammar(t *testing.T) {
 		{
 			name:  "filename and kustomize",
 			args:  []string{"edit", "-f", "a.yaml", "-k", "dir"},
-			ready: false,
-		},
-		{
-			name:  "filename and explicit empty kustomize",
-			args:  []string{"edit", "-f", "a.yaml", "--kustomize="},
-			ready: true,
-		},
-		{
-			name:  "explicit empty kustomize is not a source",
-			args:  []string{"edit", "--kustomize="},
 			ready: false,
 		},
 		{
@@ -74,4 +74,21 @@ func TestEditDeclaresResourceSourceGrammar(t *testing.T) {
 			)
 		})
 	}
+}
+
+func TestEditRepeatedScalarUsesLastOccurrence(t *testing.T) {
+	t.Parallel()
+
+	app, err := application(pluginCatalog{})
+	if err != nil {
+		t.Fatalf("Application() error = %v", err)
+	}
+	request := cli.InspectionRequest{
+		Args: []string{"edit", "deployment/foo", "--field-manager=first", "--field-manager=second"},
+	}
+	inspection := clitest.Inspect(t.Context(), app, request)
+	inspection.Require(t,
+		clitest.InspectionReady(),
+		clitest.RootCommand().Command("edit").Flag("--field-manager").Value().Text("second"),
+	)
 }

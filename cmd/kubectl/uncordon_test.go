@@ -20,8 +20,18 @@ func TestUncordonDeclaresNodeSelectionGrammar(t *testing.T) {
 		ready bool
 	}{
 		{
+			name:  "invalid dry run",
+			args:  []string{"uncordon", "node-a", "--dry-run=wat"},
+			ready: false,
+		},
+		{
 			name:  "node argument",
 			args:  []string{"uncordon", "node-a"},
+			ready: true,
+		},
+		{
+			name:  "assigned short selector",
+			args:  []string{"uncordon", "-l=role=worker"},
 			ready: true,
 		},
 		{
@@ -38,16 +48,6 @@ func TestUncordonDeclaresNodeSelectionGrammar(t *testing.T) {
 			name:  "argument and selector",
 			args:  []string{"uncordon", "node-a", "--selector=role=worker"},
 			ready: false,
-		},
-		{
-			name:  "argument and explicit empty selector",
-			args:  []string{"uncordon", "node-a", "--selector="},
-			ready: true,
-		},
-		{
-			name:  "explicit empty selector",
-			args:  []string{"uncordon", "--selector="},
-			ready: true,
 		},
 	}
 
@@ -69,4 +69,21 @@ func TestUncordonDeclaresNodeSelectionGrammar(t *testing.T) {
 			)
 		})
 	}
+}
+
+func TestUncordonRepeatedScalarUsesLastOccurrence(t *testing.T) {
+	t.Parallel()
+
+	app, err := application(pluginCatalog{})
+	if err != nil {
+		t.Fatalf("Application() error = %v", err)
+	}
+	request := cli.InspectionRequest{
+		Args: []string{"uncordon", "--selector=role=one", "--selector=role=two"},
+	}
+	inspection := clitest.Inspect(t.Context(), app, request)
+	inspection.Require(t,
+		clitest.InspectionReady(),
+		clitest.RootCommand().Command("uncordon").Flag("--selector").Value().Text("role=two"),
+	)
 }

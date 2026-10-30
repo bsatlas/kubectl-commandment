@@ -38,10 +38,7 @@ import (
 )
 
 func runTaint(_ context.Context, cfg *taintConfig) error {
-	strategy, err := dryRunStrategy(cfg.DryRun)
-	if err != nil {
-		return err
-	}
+	strategy := cfg.DryRun
 	validationDirective, err := validationDirective(cfg.Validate)
 	if err != nil {
 		return err
@@ -68,15 +65,15 @@ func runTaint(_ context.Context, cfg *taintConfig) error {
 	}
 	builder := factory.NewBuilder().WithScheme(scheme.Scheme, scheme.Scheme.PrioritizedVersionsAllGroups()...).ContinueOnError().NamespaceParam(namespace).DefaultNamespace()
 	if cfg.Selector != "" {
-		builder = builder.LabelSelectorParam(cfg.Selector).ResourceTypes("node")
+		builder.LabelSelectorParam(cfg.Selector).ResourceTypes("node")
 	}
 	if cfg.All {
-		builder = builder.SelectAllParam(true).ResourceTypes("node").Flatten().Latest()
+		builder.SelectAllParam(true).ResourceTypes("node").Flatten().Latest()
 	}
 	if !cfg.All && cfg.Selector == "" && len(cfg.Operands.Resources) >= 2 {
-		builder = builder.ResourceNames("node", cfg.Operands.Resources[1:]...)
+		builder.ResourceNames("node", cfg.Operands.Resources[1:]...)
 	}
-	builder = builder.LabelSelectorParam(cfg.Selector).Flatten().Latest()
+	builder.LabelSelectorParam(cfg.Selector).Flatten().Latest()
 	result := builder.Do()
 	if err := result.Err(); err != nil {
 		return err
@@ -105,7 +102,7 @@ func runTaint(_ context.Context, cfg *taintConfig) error {
 		}
 
 		printFlags := genericclioptions.NewPrintFlags(operation).WithTypeSetter(scheme.Scheme)
-		configurePrintFlags(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
+		configurePrintFlagsWithOutputState(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields, cfg.OutputState)
 		printObj, err := printObject(printFlags, strategy, cfg.Streams.Out)
 		if err != nil {
 			return err

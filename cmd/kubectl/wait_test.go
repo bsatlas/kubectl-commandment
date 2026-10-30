@@ -20,8 +20,18 @@ func TestWaitDeclaresSourceConditionAndSelectionGrammar(t *testing.T) {
 		ready bool
 	}{
 		{
+			name:  "invalid output format",
+			args:  []string{"wait", "pod/foo", "--for=create", "--output=wat"},
+			ready: false,
+		},
+		{
 			name:  "resource condition",
 			args:  []string{"wait", "pod/foo", "--for=create"},
+			ready: true,
+		},
+		{
+			name:  "assigned short filename",
+			args:  []string{"wait", "-f=pod.yaml", "--for=create"},
 			ready: true,
 		},
 		{
@@ -35,8 +45,28 @@ func TestWaitDeclaresSourceConditionAndSelectionGrammar(t *testing.T) {
 			ready: true,
 		},
 		{
-			name:  "condition is optional upstream",
+			name:  "missing condition",
 			args:  []string{"wait", "pod/foo"},
+			ready: false,
+		},
+		{
+			name:  "unknown condition",
+			args:  []string{"wait", "pod/foo", "--for=wat"},
+			ready: false,
+		},
+		{
+			name:  "invalid jsonpath condition",
+			args:  []string{"wait", "pod/foo", "--for=jsonpath="},
+			ready: false,
+		},
+		{
+			name:  "status condition",
+			args:  []string{"wait", "pod/foo", "--for=condition=Ready=false"},
+			ready: true,
+		},
+		{
+			name:  "jsonpath condition",
+			args:  []string{"wait", "pod/foo", "--for=jsonpath={.status.phase}=Running"},
 			ready: true,
 		},
 		{
@@ -79,4 +109,21 @@ func TestWaitDeclaresSourceConditionAndSelectionGrammar(t *testing.T) {
 			)
 		})
 	}
+}
+
+func TestWaitRepeatedScalarUsesLastOccurrence(t *testing.T) {
+	t.Parallel()
+
+	app, err := application(pluginCatalog{})
+	if err != nil {
+		t.Fatalf("Application() error = %v", err)
+	}
+	request := cli.InspectionRequest{
+		Args: []string{"wait", "pod/foo", "--for=create", "--timeout=1s", "--timeout=2s"},
+	}
+	inspection := clitest.Inspect(t.Context(), app, request)
+	inspection.Require(t,
+		clitest.InspectionReady(),
+		clitest.RootCommand().Command("wait").Flag("--timeout").Value().Text("2s"),
+	)
 }

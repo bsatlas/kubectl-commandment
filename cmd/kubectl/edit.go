@@ -22,12 +22,11 @@ type editConfig struct {
 	Arguments                []string
 	AllowMissingTemplateKeys bool
 	FieldManager             string
-	Filename                 []string
-	Kustomize                string
+	Filename                 filenameOptions
 	Output                   string
+	OutputState              cli.OptionalValue[cli.ValueState]
 	OutputPatch              bool
 	Record                   bool
-	Recursive                bool
 	SaveConfig               bool
 	ShowManagedFields        bool
 	Subresource              string
@@ -82,57 +81,54 @@ func editCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[e
 					From(client)
 			})
 
-			allowMissingTemplateKeysFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.AllowMissingTemplateKeys))
-			allowMissingTemplateKeysFlag.Description("If true, ignore any errors in templates when a field or map key is missing in the template. Only applies to golang and jsonpath output formats.")
-			cb.Values.Default(allowMissingTemplateKeysFlag, true)
-			allowMissingTemplateKeysFlag.Long("allow-missing-template-keys").ImplicitValue(true)
+			declarePrintFlags(cb, &cb.Config.Output, &cb.Config.OutputState, &cb.Config.Template, &cb.Config.AllowMissingTemplateKeys, &cb.Config.ShowManagedFields)
 
 			fieldManagerFlag := cb.Flags.String(&cb.Config.FieldManager)
+			cb.Values.ResolveWith(fieldManagerFlag, cli.Value.KeepLast())
 			fieldManagerFlag.Description("Name of the manager used to track field ownership.")
 			cb.Values.Default(fieldManagerFlag, "kubectl-edit")
 			fieldManagerFlag.Long("field-manager")
 
-			filenameValue := cb.Values.Sequence(&cb.Config.Filename, cli.Value.String())
+			filenameValue := cb.Values.Sequence(&cb.Config.Filename.Groups, filenameListLanguage)
 			filenameFlag := cb.Flags.Sequence(filenameValue)
-			filenameFlag.DelimitedBy(",")
 			filenameFlag.Description("Filename, directory, or URL to files to use to edit the resource")
 			filenameFlag.Long("filename")
-			filenameFlag.Short('f')
+			filenameFlag.Short('f').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
-			kustomize := cb.Values.String(&cb.Config.Kustomize)
+			kustomize := cb.Values.String(&cb.Config.Filename.Kustomize)
 			kustomizeFlag := cb.Flags.ValueFor(kustomize)
+			cb.Values.ResolveWith(kustomizeFlag, cli.Value.KeepLast())
 			kustomizeFlag.Description("Process the kustomization directory. This flag can't be used together with -f or -R.")
 			kustomizeFlag.Long("kustomize")
-			kustomizeFlag.Short('k')
-
-			outputFlag := cb.Flags.String(&cb.Config.Output)
-			outputFlag.Description("Output format. One of: (json, yaml, kyaml, name, go-template, go-template-file, template, templatefile, jsonpath, jsonpath-as-json, jsonpath-file).")
-			outputFlag.Long("output")
-			outputFlag.Short('o')
+			kustomizeFlag.Short('k').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
 			outputPatchFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.OutputPatch))
+			cb.Values.ResolveWith(outputPatchFlag, cli.Value.KeepLast())
 			outputPatchFlag.Description("Output the patch if the resource is edited.")
 			outputPatchFlag.Long("output-patch").ImplicitValue(true)
 
 			recordFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Record))
+			cb.Values.ResolveWith(recordFlag, cli.Value.KeepLast())
 			recordFlag.Description("Record current kubectl command in the resource annotation. If set to false, do not record the command. If set to true, record the command. If not set, default to updating the existing annotation value only if one already exists.")
 			recordFlag.Hidden().Release(preexistingDeprecation("--record will be removed in the future"))
 			recordFlag.Long("record").ImplicitValue(true)
 
-			recursive := cb.Values.Bool(&cb.Config.Recursive)
+			recursive := cb.Values.Bool(&cb.Config.Filename.Recursive)
 			recursiveFlag := cb.Flags.ValueFor(recursive)
+			cb.Values.ResolveWith(recursiveFlag, cli.Value.KeepLast())
 			recursiveFlag.Description("Process the directory used in -f, --filename recursively. Useful when you want to manage related manifests organized within the same directory.")
 			recursiveFlag.Long("recursive").ImplicitValue(true)
 			recursiveFlag.Short('R').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
 
 			saveConfigFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.SaveConfig))
+			cb.Values.ResolveWith(saveConfigFlag, cli.Value.KeepLast())
 			saveConfigFlag.Description("If true, the configuration of current object will be saved in its annotation. Otherwise, the annotation will be unchanged. This flag is useful when you want to perform kubectl apply on this object in the future.")
 			saveConfigFlag.Long("save-config").ImplicitValue(true)
 
 			cb.Rule.When(cb.When.Equal(recursive, true)).Equal(kustomize, "")
 			cb.Rule.Check("kubectl-edit-source", func(_ context.Context, cfg *editConfig, _ cli.Dependencies) (bool, error) {
-				hasFilename := len(cfg.Filename) > 0
-				hasKustomize := cfg.Kustomize != ""
+				hasFilename := len(cfg.Filename.Filenames()) > 0
+				hasKustomize := cfg.Filename.Kustomize != ""
 				if hasFilename && hasKustomize {
 					return false, nil
 				}
@@ -142,11 +138,8 @@ func editCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[e
 				DependsOn(filenameValue.OptionalDependency()).
 				DependsOn(kustomize.OptionalDependency())
 
-			showManagedFieldsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowManagedFields))
-			showManagedFieldsFlag.Description("If true, keep the managedFields when printing objects in JSON or YAML format.")
-			showManagedFieldsFlag.Long("show-managed-fields").ImplicitValue(true)
-
 			subresourceFlag := cb.Flags.String(&cb.Config.Subresource)
+			cb.Values.ResolveWith(subresourceFlag, cli.Value.KeepLast())
 			subresourceFlag.Description("If specified, edit will operate on the subresource of the requested object.")
 			subresourceFlag.CompleteBy(literalCompleter[editConfig](
 				cli.CompletionCandidateValue,
@@ -154,17 +147,15 @@ func editCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[e
 			))
 			subresourceFlag.Long("subresource")
 
-			templateFlag := cb.Flags.String(&cb.Config.Template)
-			templateFlag.Description("Template string or path to template file to use when -o=go-template, -o=go-template-file. The template format is golang templates [http://golang.org/pkg/text/template/#pkg-overview].")
-			templateFlag.Long("template")
-
 			validateFlag := cb.Flags.String(&cb.Config.Validate)
+			cb.Values.ResolveWith(validateFlag, cli.Value.KeepLast())
 			validateFlag.Description("Must be one of: strict (or true), warn, ignore (or false). \"true\" or \"strict\" will use a schema to validate the input and fail the request if invalid. It will perform server side validation if ServerSideFieldValidation is enabled on the api-server, but will fall back to less reliable client-side validation if not. \"warn\" will warn about unknown or duplicate fields without blocking the request if server-side field validation is enabled on the API server, and behave as \"ignore\" otherwise. \"false\" or \"ignore\" will not perform any schema validation, silently dropping any unknown or duplicate fields.")
 			cb.Values.Default(validateFlag, "strict")
 			validateFlagLong := validateFlag.Long("validate")
 			validateFlagLong.ImplicitValue("strict")
 
 			windowsLineEndingsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.WindowsLineEndings))
+			cb.Values.ResolveWith(windowsLineEndingsFlag, cli.Value.KeepLast())
 			windowsLineEndingsFlag.Description("Defaults to the line ending native to your platform.")
 			cb.Values.Default(windowsLineEndingsFlag, runtime.GOOS == "windows")
 			windowsLineEndingsFlag.Long("windows-line-endings").ImplicitValue(true)

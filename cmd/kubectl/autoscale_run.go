@@ -7,6 +7,7 @@ import (
 	"k8s.io/api/autoscaling/v1"
 	"k8s.io/api/autoscaling/v2"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/cli-runtime/pkg/resource"
@@ -15,6 +16,7 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/kubectl/pkg/cmd/util"
 	"k8s.io/kubectl/pkg/scheme"
+	kubectlutil "k8s.io/kubectl/pkg/util"
 )
 
 type autoscaleTarget struct {
@@ -24,26 +26,19 @@ type autoscaleTarget struct {
 	enforceNamespace bool
 }
 
-func autoscaleCreateOptions(fieldManager string, dryRun util.DryRunStrategy) v1.CreateOptions {
-	options := v1.CreateOptions{
+func autoscaleCreateOptions(fieldManager string, dryRun util.DryRunStrategy) metav1.CreateOptions {
+	options := metav1.CreateOptions{
 		FieldManager: fieldManager,
 	}
 	if dryRun == util.DryRunServer {
-		options.DryRun = []string{v1.DryRunAll}
+		options.DryRun = []string{metav1.DryRunAll}
 	}
 	return options
 }
 
-func autoscaleApplyAnnotation(saveConfig bool, object runtime.Object) error {
-	return util.CreateOrUpdateAnnotation(saveConfig, object, scheme.DefaultJSONEncoder())
-}
-
 func runAutoscale(ctx context.Context, cfg *autoscaleConfig) error {
 	factory := cfg.Client.factory()
-	dryRun, err := dryRunStrategy(cfg.DryRun)
-	if err != nil {
-		return err
-	}
+	dryRun := cfg.DryRun
 	discovery, err := factory.ToDiscoveryClient()
 	if err != nil {
 		return err
@@ -62,9 +57,9 @@ func runAutoscale(ctx context.Context, cfg *autoscaleConfig) error {
 		return err
 	}
 	filename := &resource.FilenameOptions{
-		Filenames: cfg.Filename,
-		Kustomize: cfg.Kustomize,
-		Recursive: cfg.Recursive,
+		Filenames: cfg.Filename.Filenames(),
+		Kustomize: cfg.Filename.Kustomize,
+		Recursive: cfg.Filename.Recursive,
 	}
 	result := factory.NewBuilder().
 		Unstructured().
@@ -130,7 +125,7 @@ func autoscaleRecorder(record bool) (genericclioptions.Recorder, error) {
 
 func autoscalePrint(cfg *autoscaleConfig, operation string, strategy util.DryRunStrategy) (func(runtime.Object) error, error) {
 	flags := genericclioptions.NewPrintFlags(operation).WithTypeSetter(scheme.Scheme)
-	configurePrintFlags(flags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
+	configurePrintFlagsWithOutputState(flags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields, cfg.OutputState)
 	util.PrintFlagsWithDryRunStrategy(flags, strategy)
 	printer, err := flags.ToPrinter()
 	if err != nil {
@@ -176,7 +171,7 @@ func runAutoscaleV1(ctx context.Context, cfg *autoscaleConfig, target autoscaleT
 		}
 		return printObject(hpa)
 	}
-	if err := autoscaleApplyAnnotation(cfg.SaveConfig, hpa); err != nil {
+	if err := kubectlutil.CreateOrUpdateAnnotation(cfg.SaveConfig, hpa, scheme.DefaultJSONEncoder()); err != nil {
 		return err
 	}
 	actual, err := client.AutoscalingV1().HorizontalPodAutoscalers(target.namespace).Create(ctx, hpa, autoscaleCreateOptions(cfg.FieldManager, dryRun))
@@ -205,7 +200,7 @@ func runAutoscaleV2(ctx context.Context, cfg *autoscaleConfig, target autoscaleT
 		}
 		return printObject(hpa)
 	}
-	if err := autoscaleApplyAnnotation(cfg.SaveConfig, hpa); err != nil {
+	if err := kubectlutil.CreateOrUpdateAnnotation(cfg.SaveConfig, hpa, scheme.DefaultJSONEncoder()); err != nil {
 		return err
 	}
 	actual, err := client.AutoscalingV2().HorizontalPodAutoscalers(target.namespace).Create(ctx, hpa, autoscaleCreateOptions(cfg.FieldManager, dryRun))

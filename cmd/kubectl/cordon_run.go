@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -20,16 +19,7 @@ const (
 	nodeUnschedulable
 )
 
-func runCordon(_ context.Context, cfg *cordonConfig) error {
-	return cordonNodes(cfg.Client, cfg.Streams, cfg.Arguments, cfg.Selector, cfg.DryRun, nodeUnschedulable)
-}
-
-func cordonNodes(client clientConfig, streams genericiooptions.IOStreams, names []string, selector, dryRun string, state nodeSchedulingState) error {
-	strategy, err := dryRunStrategy(dryRun)
-	if err != nil {
-		return err
-	}
-
+func cordonNodes(client clientConfig, streams genericiooptions.IOStreams, names []string, selector string, strategy util.DryRunStrategy, state nodeSchedulingState) error {
 	factory := client.factory()
 	clientset, err := factory.KubernetesClientSet()
 	if err != nil {

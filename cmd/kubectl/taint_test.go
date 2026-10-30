@@ -5,10 +5,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
 	"github.com/abstractionsinc/commandment/cli"
 	"github.com/abstractionsinc/commandment/clitest"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/clientcmd/api"
 )
 
 func TestTaintDeclaresResourceAndChangeGrammar(t *testing.T) {
@@ -24,8 +27,23 @@ func TestTaintDeclaresResourceAndChangeGrammar(t *testing.T) {
 		ready bool
 	}{
 		{
+			name:  "invalid dry run",
+			args:  []string{"taint", "nodes", "node-a", "dedicated=special:NoSchedule", "--dry-run=wat"},
+			ready: false,
+		},
+		{
+			name:  "invalid output format",
+			args:  []string{"taint", "nodes", "node-a", "dedicated=special:NoSchedule", "--output=wat"},
+			ready: false,
+		},
+		{
 			name:  "named node",
 			args:  []string{"taint", "nodes", "node-a", "dedicated=special:NoSchedule"},
+			ready: true,
+		},
+		{
+			name:  "assigned short selector",
+			args:  []string{"taint", "nodes", "dedicated=special:NoSchedule", "-l=role=worker"},
 			ready: true,
 		},
 		{
@@ -118,13 +136,13 @@ func TestTaintReportsMutationOperation(t *testing.T) {
 			name:       "addition",
 			taints:     `[]`,
 			change:     "dedicated=special:NoSchedule",
-			wantOutput: "node/node-a tainted\n",
+			wantOutput: "node/node-a tainted (dry run)\n",
 		},
 		{
 			name:       "removal",
 			taints:     `[{"key":"dedicated","value":"special","effect":"NoSchedule"}]`,
 			change:     "dedicated:NoSchedule-",
-			wantOutput: "node/node-a untainted\n",
+			wantOutput: "node/node-a untainted (dry run)\n",
 		},
 	}
 
@@ -133,7 +151,7 @@ func TestTaintReportsMutationOperation(t *testing.T) {
 			t.Parallel()
 
 			server := taintTestAPIServer(t, test.taints)
-			kubeconfig := writeGetTestKubeconfig(t, server.URL)
+			kubeconfig := writeTaintTestKubeconfig(t, server.URL)
 			app, err := application(pluginCatalog{})
 			if err != nil {
 				t.Fatalf("Application() error = %v", err)
@@ -158,6 +176,25 @@ func TestTaintReportsMutationOperation(t *testing.T) {
 	}
 }
 
+func writeTaintTestKubeconfig(t *testing.T, server string) string {
+	t.Helper()
+
+	config := api.NewConfig()
+	config.CurrentContext = "fixture"
+	config.Clusters["fixture"] = &api.Cluster{
+		Server: server,
+	}
+	config.Contexts["fixture"] = &api.Context{
+		Cluster:   "fixture",
+		Namespace: "test",
+	}
+	path := filepath.Join(t.TempDir(), "config")
+	if err := clientcmd.WriteToFile(*config, path); err != nil {
+		t.Fatalf("write kubeconfig: %v", err)
+	}
+	return path
+}
+
 func taintTestAPIServer(t *testing.T, taints string) *httptest.Server {
 	t.Helper()
 
@@ -178,4 +215,21 @@ func taintTestAPIServer(t *testing.T, taints string) *httptest.Server {
 	}))
 	t.Cleanup(server.Close)
 	return server
+}
+
+func TestTaintRepeatedScalarUsesLastOccurrence(t *testing.T) {
+	t.Parallel()
+
+	app, err := application(pluginCatalog{})
+	if err != nil {
+		t.Fatalf("Application() error = %v", err)
+	}
+	request := cli.InspectionRequest{
+		Args: []string{"taint", "nodes", "node-a", "dedicated=special:NoSchedule", "--field-manager=first", "--field-manager=second"},
+	}
+	inspection := clitest.Inspect(t.Context(), app, request)
+	inspection.Require(t,
+		clitest.InspectionReady(),
+		clitest.RootCommand().Command("taint").Flag("--field-manager").Value().Text("second"),
+	)
 }

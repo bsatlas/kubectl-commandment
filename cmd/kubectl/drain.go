@@ -6,6 +6,7 @@ import (
 	"github.com/abstractionsinc/commandment/cli"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/cli-runtime/pkg/genericiooptions"
+	"k8s.io/kubectl/pkg/cmd/util"
 )
 
 var drainPodSelectorLanguage = cli.ValueCodec[string]{
@@ -31,7 +32,7 @@ type drainConfig struct {
 	ChunkSize                int64
 	DeleteEmptydirData       bool
 	DisableEviction          bool
-	DryRun                   string
+	DryRun                   util.DryRunStrategy
 	Force                    bool
 	GracePeriod              int
 	IgnoreDaemonsets         bool
@@ -75,53 +76,65 @@ func drainCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[
 			})
 
 			chunkSizeFlag := cb.Flags.Value(&cb.Config.ChunkSize, int64Language())
+			cb.Values.ResolveWith(chunkSizeFlag, cli.Value.KeepLast())
 			chunkSizeFlag.Description("Return large lists in chunks rather than all at once. Pass 0 to disable.")
 			cb.Values.Default(chunkSizeFlag, int64(500))
 			chunkSizeFlag.Long("chunk-size")
 
 			deleteEmptydirDataFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.DeleteEmptydirData))
+			cb.Values.ResolveWith(deleteEmptydirDataFlag, cli.Value.KeepLast())
 			deleteEmptydirDataFlag.Description("Continue even if there are pods using emptyDir (local data that will be deleted when the node is drained).")
 			deleteEmptydirDataFlag.Long("delete-emptydir-data").ImplicitValue(true)
 
 			disableEvictionFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.DisableEviction))
+			cb.Values.ResolveWith(disableEvictionFlag, cli.Value.KeepLast())
 			disableEvictionFlag.Description("Force drain to use delete, even if eviction is supported. This will bypass checking PodDisruptionBudgets, use with caution.")
 			disableEvictionFlag.Long("disable-eviction").ImplicitValue(true)
 
-			dryRunFlag := cb.Flags.String(&cb.Config.DryRun)
+			dryRun := cb.Values.Value(&cb.Config.DryRun, dryRunValueLanguage)
+			dryRunFlag := cb.Flags.ValueFor(dryRun)
+			cb.Values.ResolveWith(dryRunFlag, cli.Value.KeepLast())
 			dryRunFlag.Description("Must be \"none\", \"server\", or \"client\". If client strategy, only print the object that would be sent, without sending it. If server strategy, submit server-side request without persisting the resource.")
-			cb.Values.Default(dryRunFlag, "none")
-			dryRunFlag.Long("dry-run").ImplicitValue("unchanged")
+			cb.Values.Default(dryRun, util.DryRunNone)
+			dryRunFlag.Long("dry-run").ImplicitValue(util.DryRunClient)
 
 			forceFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Force))
+			cb.Values.ResolveWith(forceFlag, cli.Value.KeepLast())
 			forceFlag.Description("Continue even if there are pods that do not declare a controller.")
 			forceFlag.Long("force").ImplicitValue(true)
 
 			gracePeriodFlag := cb.Flags.Int(&cb.Config.GracePeriod)
+			cb.Values.ResolveWith(gracePeriodFlag, cli.Value.KeepLast())
 			gracePeriodFlag.Description("Period of time in seconds given to each pod to terminate gracefully. If negative, the default value specified in the pod will be used.")
 			cb.Values.Default(gracePeriodFlag, -1)
 			gracePeriodFlag.Long("grace-period")
 
 			ignoreDaemonsetsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.IgnoreDaemonsets))
+			cb.Values.ResolveWith(ignoreDaemonsetsFlag, cli.Value.KeepLast())
 			ignoreDaemonsetsFlag.Description("Ignore DaemonSet-managed pods.")
 			ignoreDaemonsetsFlag.Long("ignore-daemonsets").ImplicitValue(true)
 
 			podSelectorFlag := cb.Flags.Value(&cb.Config.PodSelector, drainPodSelectorLanguage)
+			cb.Values.ResolveWith(podSelectorFlag, cli.Value.KeepLast())
 			podSelectorFlag.Description("Label selector to filter pods on the node")
 			podSelectorFlag.Long("pod-selector")
 
 			selectorFlag := cb.Flags.String(&cb.Config.Selector)
+			cb.Values.ResolveWith(selectorFlag, cli.Value.KeepLast())
 			selectorFlag.Description("Selector (label query) to filter nodes on.")
 			selectorFlag.Long("selector")
-			selectorFlag.Short('l')
+			selectorFlag.Short('l').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
 			cb.Rule.AtLeastOne(arguments, selectorFlag)
 			cb.Rule.When(cb.When.NotEqual(selectorFlag.Destination(), "")).Forbid(arguments)
 
 			skipWaitForDeleteTimeoutFlag := cb.Flags.Int(&cb.Config.SkipWaitForDeleteTimeout)
+			cb.Values.ResolveWith(skipWaitForDeleteTimeoutFlag, cli.Value.KeepLast())
 			skipWaitForDeleteTimeoutFlag.Description("If pod DeletionTimestamp older than N seconds, skip waiting for the pod. Seconds must be greater than 0 to skip.")
 			skipWaitForDeleteTimeoutFlag.Long("skip-wait-for-delete-timeout")
 
 			timeoutFlag := cb.Flags.Value(&cb.Config.Timeout, durationLanguage())
+			cb.Values.ResolveWith(timeoutFlag, cli.Value.KeepLast())
 			timeoutFlag.Description("The length of time to wait before giving up, zero means infinite")
 			timeoutFlag.Long("timeout")
 		},

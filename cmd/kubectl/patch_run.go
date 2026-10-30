@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"slices"
 
 	"gopkg.in/evanphx/json-patch.v4"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -39,20 +38,18 @@ import (
 )
 
 func runPatch(_ context.Context, cfg *patchConfig) error {
-	strategy, err := dryRunStrategy(cfg.DryRun)
-	if err != nil {
-		return err
-	}
+	strategy := cfg.DryRun
 	patchType := cfg.Type
 
 	patchBytes := []byte(cfg.Patch)
 	if cfg.PatchFile != "" {
-		patchBytes, err = os.ReadFile(cfg.PatchFile)
+		contents, err := os.ReadFile(cfg.PatchFile)
 		if err != nil {
 			return fmt.Errorf("unable to read patch file: %v", err)
 		}
+		patchBytes = contents
 	}
-	patchBytes, err = yaml.ToJSON(patchBytes)
+	patchBytes, err := yaml.ToJSON(patchBytes)
 	if err != nil {
 		return fmt.Errorf("unable to parse %q: %v", cfg.Patch, err)
 	}
@@ -63,9 +60,9 @@ func runPatch(_ context.Context, cfg *patchConfig) error {
 		return err
 	}
 	filenames := resource.FilenameOptions{
-		Filenames: slices.Clone(cfg.Filename),
-		Kustomize: cfg.Kustomize,
-		Recursive: cfg.Recursive,
+		Filenames: cfg.Filename.Filenames(),
+		Kustomize: cfg.Filename.Kustomize,
+		Recursive: cfg.Filename.Recursive,
 	}
 	result := factory.NewBuilder().
 		Unstructured().
@@ -82,7 +79,7 @@ func runPatch(_ context.Context, cfg *patchConfig) error {
 	}
 
 	printFlags := genericclioptions.NewPrintFlags("patched").WithTypeSetter(scheme.Scheme)
-	configurePrintFlags(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
+	configurePrintFlagsWithOutputState(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields, cfg.OutputState)
 	util.PrintFlagsWithDryRunStrategy(printFlags, strategy)
 	toPrinter := func(operation string) (func(runtime.Object) error, error) {
 		printFlags.NamePrintFlags.Operation = operation

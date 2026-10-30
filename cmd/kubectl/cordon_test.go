@@ -20,8 +20,18 @@ func TestCordonDeclaresNodeSelectionGrammar(t *testing.T) {
 		ready bool
 	}{
 		{
+			name:  "invalid dry run",
+			args:  []string{"cordon", "node-a", "--dry-run=wat"},
+			ready: false,
+		},
+		{
 			name:  "node argument",
 			args:  []string{"cordon", "node-a"},
+			ready: true,
+		},
+		{
+			name:  "assigned short selector",
+			args:  []string{"cordon", "-l=role=worker"},
 			ready: true,
 		},
 		{
@@ -38,16 +48,6 @@ func TestCordonDeclaresNodeSelectionGrammar(t *testing.T) {
 			name:  "argument and selector",
 			args:  []string{"cordon", "node-a", "--selector=role=worker"},
 			ready: false,
-		},
-		{
-			name:  "argument and explicit empty selector",
-			args:  []string{"cordon", "node-a", "--selector="},
-			ready: true,
-		},
-		{
-			name:  "explicit empty selector",
-			args:  []string{"cordon", "--selector="},
-			ready: true,
 		},
 	}
 
@@ -69,4 +69,21 @@ func TestCordonDeclaresNodeSelectionGrammar(t *testing.T) {
 			)
 		})
 	}
+}
+
+func TestCordonRepeatedScalarUsesLastOccurrence(t *testing.T) {
+	t.Parallel()
+
+	app, err := application(pluginCatalog{})
+	if err != nil {
+		t.Fatalf("Application() error = %v", err)
+	}
+	request := cli.InspectionRequest{
+		Args: []string{"cordon", "--selector=role=one", "--selector=role=two"},
+	}
+	inspection := clitest.Inspect(t.Context(), app, request)
+	inspection.Require(t,
+		clitest.InspectionReady(),
+		clitest.RootCommand().Command("cordon").Flag("--selector").Value().Text("role=two"),
+	)
 }
