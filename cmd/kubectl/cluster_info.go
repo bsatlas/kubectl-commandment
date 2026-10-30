@@ -1,8 +1,13 @@
 package main
 
 import (
+	"context"
+
 	"github.com/abstractionsinc/commandment/cli"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/cli-runtime/pkg/genericiooptions"
+	"k8s.io/cli-runtime/pkg/resource"
+	"k8s.io/kubectl/pkg/cmd/clusterinfo"
 )
 
 type clusterInfoConfig struct {
@@ -37,7 +42,24 @@ func clusterInfoCommand(client cli.Destination[rootConfig, clientConfig]) cli.Co
 			dump := clusterInfoDumpCommand(client)
 			cb.Subcommands.Command(dump)
 		},
-		Run: runClusterInfo,
+		Run: func(_ context.Context, cfg *clusterInfoConfig) error {
+			getter := restClientGetter(cfg.Client)
+			restConfig, err := getter.ToRESTConfig()
+			if err != nil {
+				return err
+			}
+			namespace := cfg.Client.Namespace
+			if namespace == "" {
+				namespace = metav1.NamespaceSystem
+			}
+			options := clusterinfo.ClusterInfoOptions{
+				IOStreams: cfg.Streams,
+				Namespace: namespace,
+				Builder:   resource.NewBuilder(getter),
+				Client:    restConfig,
+			}
+			return options.Run()
+		},
 	}
 	return cmd
 }

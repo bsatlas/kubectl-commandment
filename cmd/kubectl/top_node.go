@@ -58,7 +58,7 @@ func topNodeCommand(client cli.Destination[rootConfig, clientConfig]) cli.Comman
 
 			selectorFlag := cb.Flags.String(&cb.Config.Selector).Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
 			selectorFlag.Long("selector")
-			selectorFlag.Short('l')
+			selectorFlag.Short('l').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
 			showCapacityFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowCapacity)).Description("Print node resources based on Capacity instead of Allocatable(default) of the nodes.")
 			showCapacityFlag.Long("show-capacity").ImplicitValue(true)

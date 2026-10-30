@@ -26,14 +26,14 @@ func runAPIResources(_ context.Context, cfg *apiResourcesConfig) error {
 	}
 
 	lists, discoveryErr := discoveryClient.ServerPreferredResources()
-	errList := []error{}
+	var errList []error
 	if discoveryErr != nil {
 		errList = append(errList, discoveryErr)
 	}
 
 	groupChanged := explicitFlagValue(cfg.APIGroupState)
 	namespacedChanged := explicitFlagValue(cfg.NamespacedState)
-	allResources := make([]v1.APIResource, 0)
+	var allResources []v1.APIResource
 	hasResourceList := false
 	for _, list := range lists {
 		if len(list.APIResources) == 0 {
@@ -93,13 +93,15 @@ func runAPIResources(_ context.Context, cfg *apiResourcesConfig) error {
 		APIResources: allResources,
 	}
 	writer := printers.GetNewTabWriter(cfg.Stdout)
-	defer writer.Flush()
 	if !cfg.NoHeaders && (cfg.Output == "" || cfg.Output == "wide") {
 		if err := printAPIResourceHeaders(writer, cfg.Output); err != nil {
 			errList = append(errList, err)
 		}
 	}
 	if err := printer.PrintObj(list, writer); err != nil {
+		errList = append(errList, err)
+	}
+	if err := writer.Flush(); err != nil {
 		errList = append(errList, err)
 	}
 	return errors.NewAggregate(errList)

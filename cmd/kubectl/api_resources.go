@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"io"
+	"strings"
 
 	"github.com/abstractionsinc/commandment/cli"
 )
@@ -80,11 +82,11 @@ func apiResourcesCommand(client cli.Destination[rootConfig, clientConfig]) cli.C
 			noHeadersFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.NoHeaders)).Description("When using the default or custom-column output format, don't print headers (default print headers).")
 			noHeadersFlag.Long("no-headers").ImplicitValue(true)
 
-			output := cb.Values.String(&cb.Config.Output)
+			output := cb.Values.Value(&cb.Config.Output, apiResourcesOutputLanguage)
 			outputFlag := cb.Flags.ValueFor(output).Description("Output format. One of: (json, yaml, kyaml, name, wide).")
+			outputFlag.CompleteBy(literalCompleter[apiResourcesConfig](cli.CompletionCandidateValue, "json", "yaml", "kyaml", "name", "wide"))
 			outputFlag.Long("output")
-			outputFlag.Short('o')
-			cb.Rule.In(output, "", "json", "yaml", "kyaml", "name", "wide")
+			outputFlag.Short('o').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
 			showManagedFieldsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowManagedFields)).Description("If true, keep the managedFields when printing objects in JSON or YAML format.")
 			showManagedFieldsFlag.Long("show-managed-fields").ImplicitValue(true)
@@ -103,4 +105,24 @@ func apiResourcesCommand(client cli.Destination[rootConfig, clientConfig]) cli.C
 		Run: runAPIResources,
 	}
 	return cmd
+}
+
+var apiResourcesOutputLanguage = cli.ValueCodec[string]{
+	Name: "kubectl-api-resources-output",
+	Parse: func(value string) (string, error) {
+		switch {
+		case value == "", value == "name", value == "wide":
+			return value, nil
+		case strings.EqualFold(value, "json"), strings.EqualFold(value, "yaml"), strings.EqualFold(value, "kyaml"):
+			return value, nil
+		default:
+			return "", cli.Rejection.Message(
+				"output-format",
+				fmt.Sprintf("unsupported output format %q", value),
+				cli.Rejection.At(0, 0, len(value)),
+			)
+		}
+	},
+	Format:   func(value string) string { return value },
+	Snapshot: func(value string) string { return value },
 }

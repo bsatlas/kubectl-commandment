@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/abstractionsinc/commandment/cli"
 	"k8s.io/cli-runtime/pkg/genericiooptions"
+	"k8s.io/kubectl/pkg/cmd/events"
 )
 
 type eventsConfig struct {
@@ -70,40 +72,40 @@ func eventsCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command
 			allNamespacesFlag.Description("If present, list the requested object(s) across all namespaces. Namespace in current context is ignored even if specified with --namespace.").Long("all-namespaces").ImplicitValue(true)
 			allNamespacesFlag.Short('A').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
 
-			allowMissingTemplateKeysFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.AllowMissingTemplateKeys))
-			allowMissingTemplateKeysFlag.Description("If true, ignore any errors in templates when a field or map key is missing in the template. Only applies to golang and jsonpath output formats.").Long("allow-missing-template-keys").ImplicitValue(true)
-			cb.Values.Default(allowMissingTemplateKeysFlag, true)
-
 			chunkSizeFlag := cb.Flags.Value(&cb.Config.ChunkSize, int64Language())
 			chunkSizeFlag.Description("Return large lists in chunks rather than all at once. Pass 0 to disable.").Long("chunk-size")
 			cb.Values.Default(chunkSizeFlag, int64(500))
 
-			forValue := cb.Values.Value(&cb.Config.For, eventSubjectLanguage)
+			forValue := cb.Values.Value(&cb.Config.For, eventsSubjectLanguage)
 			forFlag := cb.Flags.ValueFor(forValue)
 			forFlag.Description("Filter events to only those pertaining to the specified resource.").Long("for")
 
 			noHeadersFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.NoHeaders))
 			noHeadersFlag.Description("When using the default output format, don't print headers.").Long("no-headers").ImplicitValue(true)
 
+			allowMissingTemplateKeysFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.AllowMissingTemplateKeys))
+			allowMissingTemplateKeysFlag.Description("If true, ignore any errors in templates when a field or map key is missing in the template. Only applies to golang and jsonpath output formats.").Long("allow-missing-template-keys").ImplicitValue(true)
+			cb.Values.Default(allowMissingTemplateKeysFlag, true)
+
 			output := cb.Values.Value(&cb.Config.Output, printOutputLanguage)
-			outputFlag := cb.Flags.ValueFor(output)
-			outputFlag.Description("Output format. One of: (json, yaml, kyaml, name, go-template, go-template-file, template, templatefile, jsonpath, jsonpath-as-json, jsonpath-file).").Long("output")
-			outputFlag.Short('o')
+			outputFlag := cb.Flags.ValueFor(output).
+				Description("Output format. One of: (json, yaml, kyaml, name, go-template, go-template-file, template, templatefile, jsonpath, jsonpath-as-json, jsonpath-file).")
+			outputFlag.CompleteBy(completePrintOutputFormat[eventsConfig])
+			outputFlag.Long("output")
+			outputFlag.Short('o').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 			cb.Access.ValueState(outputFlag, &cb.Config.OutputState)
 
 			showManagedFieldsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowManagedFields))
 			showManagedFieldsFlag.Description("If true, keep the managedFields when printing objects in JSON or YAML format.").Long("show-managed-fields").ImplicitValue(true)
 
-			templateFlag := cb.Flags.String(&cb.Config.Template)
-			templateFlag.Description("Template string or path to template file to use when -o=go-template, -o=go-template-file.").Long("template")
+			templateFlag := cb.Flags.String(&cb.Config.Template).
+				Description("Template string or path to template file to use when -o=go-template, -o=go-template-file. The template format is golang templates [http://golang.org/pkg/text/template/#pkg-overview].").
+				CompleteWith(cli.CompletionNativeFiles)
+			templateFlag.Long("template")
 
-			cb.Rule.Check("kubectl-events-output-template", func(_ context.Context, cfg *eventsConfig, _ cli.Dependencies) (bool, error) {
-				return validPrintOutputTemplate(cfg.Output, cfg.Template), nil
-			}).
-				DependsOn(output.OptionalDependency()).
-				DependsOn(templateFlag.Destination().OptionalDependency())
+			declarePrintOutputTemplateRule(cb, outputFlag, templateFlag)
 
-			typesValue := cb.Values.Sequence(&cb.Config.Types, eventTypeLanguage)
+			typesValue := cb.Values.Sequence(&cb.Config.Types, eventsTypeLanguage)
 			typesFlag := cb.Flags.Sequence(typesValue)
 			typesFlag.DelimitedBy(",").Description("Output only events of given types.").Long("types")
 
@@ -116,12 +118,29 @@ func eventsCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command
 				form.Sequence(ignoredArgs, "ARG", cli.Count.ZeroOrMore()).Hidden()
 			})
 		},
-		Run: runEvents,
+		Run: func(_ context.Context, cfg *eventsConfig) error {
+			flags := events.NewEventsFlags(restClientGetter(cfg.Client), cfg.Streams)
+			flags.AllNamespaces = cfg.AllNamespaces
+			flags.Watch = cfg.Watch
+			flags.NoHeaders = cfg.NoHeaders
+			if cfg.For.Resource != "" {
+				flags.ForObject = cfg.For.Resource + "/" + cfg.For.Name
+			}
+			flags.FilterTypes = slices.Clone(cfg.Types)
+			flags.ChunkSize = cfg.ChunkSize
+			configurePrintFlagsWithOutputState(flags.PrintFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields, cfg.OutputState)
+
+			options, err := flags.ToOptions()
+			if err != nil {
+				return err
+			}
+			return options.Run()
+		},
 	}
 	return cmd
 }
 
-var eventTypeLanguage = cli.ValueCodec[string]{
+var eventsTypeLanguage = cli.ValueCodec[string]{
 	Name: "kubectl-event-type",
 	Parse: func(value string) (string, error) {
 		switch {
@@ -140,7 +159,7 @@ var eventTypeLanguage = cli.ValueCodec[string]{
 	Snapshot: func(value string) string { return value },
 }
 
-var eventSubjectLanguage = cli.ValueCodec[eventSubject]{
+var eventsSubjectLanguage = cli.ValueCodec[eventSubject]{
 	Name: "kubectl-event-subject",
 	Parse: func(value string) (eventSubject, error) {
 		if value == "" {

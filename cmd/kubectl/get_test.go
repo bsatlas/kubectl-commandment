@@ -54,7 +54,7 @@ func TestGetRawUsesSelectedKubeconfig(t *testing.T) {
 		Stderr: io.Discard,
 	}
 
-	err := app.Run(t.Context(), request)
+	err = app.Run(t.Context(), request)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -224,7 +224,7 @@ func TestGetRawIgnoresFilenameKustomizeComposition(t *testing.T) {
 	proof.Require(t, clitest.InspectionReady())
 }
 
-func TestGetRejectsNamedResourceWithSelector(t *testing.T) {
+func TestGetAcceptsNamedResourceWithSelector(t *testing.T) {
 	t.Parallel()
 
 	app, err := application(pluginCatalog{})
@@ -233,13 +233,10 @@ func TestGetRejectsNamedResourceWithSelector(t *testing.T) {
 	}
 	request := cli.InspectionRequest{Args: []string{"get", "pods", "pod-a", "--selector", "app=test"}}
 
-	clitest.Inspect(t.Context(), app, request).Require(t,
-		clitest.InspectionRejected(),
-		clitest.FailsWith(clitest.Diagnostic(cli.DiagnosticRuleViolation).Present()),
-	)
+	clitest.Inspect(t.Context(), app, request).Require(t, clitest.InspectionReady())
 }
 
-func TestGetRejectsQualifiedResourceWithFieldSelector(t *testing.T) {
+func TestGetAcceptsQualifiedResourceWithFieldSelector(t *testing.T) {
 	t.Parallel()
 
 	app, err := application(pluginCatalog{})
@@ -248,10 +245,7 @@ func TestGetRejectsQualifiedResourceWithFieldSelector(t *testing.T) {
 	}
 	request := cli.InspectionRequest{Args: []string{"get", "pods/pod-a", "--field-selector", "metadata.name=pod-a"}}
 
-	clitest.Inspect(t.Context(), app, request).Require(t,
-		clitest.InspectionRejected(),
-		clitest.FailsWith(clitest.Diagnostic(cli.DiagnosticRuleViolation).Present()),
-	)
+	clitest.Inspect(t.Context(), app, request).Require(t, clitest.InspectionReady())
 }
 
 func TestGetAllowsBulkResourceWithSelector(t *testing.T) {
@@ -266,7 +260,7 @@ func TestGetAllowsBulkResourceWithSelector(t *testing.T) {
 	clitest.Inspect(t.Context(), app, request).Require(t, clitest.InspectionReady())
 }
 
-func TestGetRejectsBulkResourceWithSubresource(t *testing.T) {
+func TestGetAcceptsBulkResourceWithSubresource(t *testing.T) {
 	t.Parallel()
 
 	app, err := application(pluginCatalog{})
@@ -275,10 +269,7 @@ func TestGetRejectsBulkResourceWithSubresource(t *testing.T) {
 	}
 	request := cli.InspectionRequest{Args: []string{"get", "pods", "--subresource", "status"}}
 
-	clitest.Inspect(t.Context(), app, request).Require(t,
-		clitest.InspectionRejected(),
-		clitest.FailsWith(clitest.Diagnostic(cli.DiagnosticRuleViolation).Present()),
-	)
+	clitest.Inspect(t.Context(), app, request).Require(t, clitest.InspectionReady())
 }
 
 func TestGetAllowsNamedResourceWithSubresource(t *testing.T) {
@@ -293,7 +284,7 @@ func TestGetAllowsNamedResourceWithSubresource(t *testing.T) {
 	clitest.Inspect(t.Context(), app, request).Require(t, clitest.InspectionReady())
 }
 
-func TestGetRejectsResourceArgumentsWithFilename(t *testing.T) {
+func TestGetAcceptsResourceArgumentsWithFilename(t *testing.T) {
 	t.Parallel()
 
 	app, err := application(pluginCatalog{})
@@ -302,10 +293,19 @@ func TestGetRejectsResourceArgumentsWithFilename(t *testing.T) {
 	}
 	request := cli.InspectionRequest{Args: []string{"get", "pods", "--filename", "pod.yaml"}}
 
-	clitest.Inspect(t.Context(), app, request).Require(t,
-		clitest.InspectionRejected(),
-		clitest.FailsWith(clitest.Diagnostic(cli.DiagnosticRuleViolation).Present()),
-	)
+	clitest.Inspect(t.Context(), app, request).Require(t, clitest.InspectionReady())
+}
+
+func TestGetAcceptsCaseInsensitiveStructuredOutput(t *testing.T) {
+	t.Parallel()
+
+	app, err := application(pluginCatalog{})
+	if err != nil {
+		t.Fatalf("Application() error = %v", err)
+	}
+	request := cli.InspectionRequest{Args: []string{"get", "pods", "-o=JSON"}}
+
+	clitest.Inspect(t.Context(), app, request).Require(t, clitest.InspectionReady())
 }
 
 func TestGetResourceTypeCompletionUsesCanonicalNames(t *testing.T) {
@@ -406,8 +406,22 @@ func getTestAPIServer(t *testing.T) *httptest.Server {
 			return
 		}
 		writer.Header().Set("Content-Type", response.contentType)
-		_, _ = writer.Write([]byte(response.body))
+		if _, err := writer.Write([]byte(response.body)); err != nil {
+			t.Errorf("write fixture response: %v", err)
+		}
 	}))
 	t.Cleanup(server.Close)
 	return server
+}
+
+func TestGetAcceptsAssignedShortSelectorAndLabelColumnForms(t *testing.T) {
+	t.Parallel()
+
+	app, err := application(pluginCatalog{})
+	if err != nil {
+		t.Fatalf("Application() error = %v", err)
+	}
+	request := cli.InspectionRequest{Args: []string{"get", "pods", "-l=app=test", "-L=team"}}
+
+	clitest.Inspect(t.Context(), app, request).Require(t, clitest.InspectionReady())
 }

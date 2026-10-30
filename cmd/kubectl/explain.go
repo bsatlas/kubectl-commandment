@@ -65,7 +65,7 @@ func explainCommand(client cli.Destination[rootConfig, clientConfig]) cli.Comman
 			cb.Access.Stdout(&cb.Config.Streams.Out)
 			cb.Access.Stderr(&cb.Config.Streams.ErrOut)
 
-			apiVersion := cb.Values.Value(&cb.Config.APIVersion, apiVersionLanguage)
+			apiVersion := cb.Values.Value(&cb.Config.APIVersion, explainAPIVersionLanguage)
 			apiVersionFlag := cb.Flags.ValueFor(apiVersion)
 			apiVersionFlag.Description("Get different explanations for particular API version (API group/version)").Long("api-version")
 
@@ -84,7 +84,7 @@ func explainCommand(client cli.Destination[rootConfig, clientConfig]) cli.Comman
 			cb.Values.Default(output, "plaintext")
 			outputFlag := cb.Flags.ValueFor(output)
 			outputFlag.Description("Format in which to render the schema (plaintext, plaintext-openapiv2)").Long("output")
-			outputFlag.Short('o')
+			outputFlag.Short('o').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 			cb.Rule.In(output, "plaintext", "plaintext-openapiv2")
 
 			recursiveFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Recursive))
@@ -102,7 +102,7 @@ func explainCommand(client cli.Destination[rootConfig, clientConfig]) cli.Comman
 	return cmd
 }
 
-var apiVersionLanguage = cli.ValueCodec[schema.GroupVersion]{
+var explainAPIVersionLanguage = cli.ValueCodec[schema.GroupVersion]{
 	Name: "kubernetes-api-version",
 	Parse: func(value string) (schema.GroupVersion, error) {
 		if value == "" {
@@ -185,7 +185,7 @@ func completeExplainResource(_ context.Context, cfg *explainConfig, request cli.
 		gvr.Version = cfg.APIVersion.Version
 	}
 
-	candidates := make([]cli.CompletionCandidate, 0)
+	var candidates []cli.CompletionCandidate
 	hasExpandable := false
 	expandable, leaves := explainFieldNamesForGVR(getter, mapper, gvr, fieldsPath)
 	base := request.Text[:lastDot+1]

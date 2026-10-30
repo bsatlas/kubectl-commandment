@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"time"
 
 	"github.com/abstractionsinc/commandment/cli"
@@ -71,7 +70,7 @@ func clusterInfoDumpCommand(client cli.Destination[rootConfig, clientConfig]) cl
 			cb.Values.Default(output, "json")
 			outputFlag := cb.Flags.ValueFor(output).Description("Output format. One of: (json, yaml, kyaml, name, go-template, go-template-file, template, templatefile, jsonpath, jsonpath-as-json, jsonpath-file).")
 			outputFlag.Long("output")
-			outputFlag.Short('o')
+			outputFlag.Short('o').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 			cb.Access.ValueState(outputFlag, &cb.Config.OutputState)
 
 			outputDirectoryFlag := cb.Flags.String(&cb.Config.OutputDirectory).Description("Where to output the files.  If empty or '-' uses stdout, otherwise creates a directory hierarchy in that directory")
@@ -85,14 +84,10 @@ func clusterInfoDumpCommand(client cli.Destination[rootConfig, clientConfig]) cl
 			showManagedFieldsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowManagedFields)).Description("If true, keep the managedFields when printing objects in JSON or YAML format.")
 			showManagedFieldsFlag.Long("show-managed-fields").ImplicitValue(true)
 
-			templateFlag := cb.Flags.String(&cb.Config.Template).Description("Template string or path to template file to use when -o=go-template, -o=go-template-file. The template format is golang templates [http://golang.org/pkg/text/template/#pkg-overview].")
+			templateFlag := cb.Flags.String(&cb.Config.Template).Description("Template string or path to template file to use when -o=go-template, -o=go-template-file. The template format is golang templates [http://golang.org/pkg/text/template/#pkg-overview].").CompleteWith(cli.CompletionNativeFiles)
 			templateFlag.Long("template")
 
-			cb.Rule.Check("kubectl-cluster-info-dump-output-template", func(_ context.Context, cfg *clusterInfoDumpConfig, _ cli.Dependencies) (bool, error) {
-				return validPrintOutputTemplate(cfg.Output, cfg.Template), nil
-			}).
-				DependsOn(output.OptionalDependency()).
-				DependsOn(templateFlag.Destination().OptionalDependency())
+			declarePrintOutputTemplateRule(cb, outputFlag, templateFlag)
 
 			ignoredArgs := cb.Values.Sequence(&cb.Config.IgnoredArgs, cli.Value.String())
 			cb.Arguments.Form(func(form *cli.ArgumentFormBuilder[clusterInfoDumpConfig]) {

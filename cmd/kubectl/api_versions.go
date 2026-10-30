@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"io"
+	"slices"
 
 	"github.com/abstractionsinc/commandment/cli"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 type apiVersionsConfig struct {
@@ -28,7 +32,26 @@ func apiVersionsCommand(client cli.Destination[rootConfig, clientConfig]) cli.Co
 			cb.Access.Value(client, &cb.Config.Client)
 			cb.Access.Stdout(&cb.Config.Stdout)
 		},
-		Run: runAPIVersions,
+		Run: func(_ context.Context, cfg *apiVersionsConfig) error {
+			discoveryClient, err := restClientGetter(cfg.Client).ToDiscoveryClient()
+			if err != nil {
+				return err
+			}
+			discoveryClient.Invalidate()
+
+			groups, err := discoveryClient.ServerGroups()
+			if err != nil {
+				return fmt.Errorf("couldn't get available api versions from server: %w", err)
+			}
+			versions := metav1.ExtractGroupVersions(groups)
+			slices.Sort(versions)
+			for _, version := range versions {
+				if _, err := fmt.Fprintln(cfg.Stdout, version); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
 	}
 	return cmd
 }

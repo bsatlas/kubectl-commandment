@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -41,7 +42,7 @@ func runGet(_ context.Context, cfg *getConfig) error {
 		PrintFlags:             getPrintFlags(cfg),
 		IsHumanReadablePrinter: cfg.HumanReadable,
 		FilenameOptions: resource.FilenameOptions{
-			Filenames: cfg.Filenames,
+			Filenames: slices.Concat(cfg.FilenameGroups...),
 			Kustomize: cfg.Kustomize,
 			Recursive: cfg.Recursive,
 		},
@@ -79,10 +80,14 @@ func runGet(_ context.Context, cfg *getConfig) error {
 			flags.SetKind(mapping.GroupVersionKind.GroupKind())
 		}
 		if withNamespace {
-			_ = flags.EnsureWithNamespace()
+			if err := flags.EnsureWithNamespace(); err != nil {
+				return nil, err
+			}
 		}
 		if withKind {
-			_ = flags.EnsureWithKind()
+			if err := flags.EnsureWithKind(); err != nil {
+				return nil, err
+			}
 		}
 
 		printer, err := flags.ToPrinter()
@@ -117,15 +122,19 @@ func runGet(_ context.Context, cfg *getConfig) error {
 	}
 
 	if cfg.SortBy != "" {
+		var err error
 		switch {
 		case cfg.Watch:
-			_, _ = fmt.Fprintln(cfg.Stderr, "warning: --watch requested, --sort-by will be ignored for watch events received")
+			_, err = fmt.Fprintln(cfg.Stderr, "warning: --watch requested, --sort-by will be ignored for watch events received")
 		case cfg.WatchOnly:
-			_, _ = fmt.Fprintln(cfg.Stderr, "warning: --watch-only requested, --sort-by will be ignored")
+			_, err = fmt.Fprintln(cfg.Stderr, "warning: --watch-only requested, --sort-by will be ignored")
+		}
+		if err != nil {
+			return err
 		}
 	}
 
-	resourceArguments := append([]string(nil), cfg.QualifiedResources...)
+	resourceArguments := slices.Clone(cfg.QualifiedResources)
 	if cfg.ResourceType != "" {
 		resourceArguments = make([]string, 0, 1+len(cfg.Names))
 		resourceArguments = append(resourceArguments, cfg.ResourceType)
@@ -143,7 +152,7 @@ func getPrintFlags(cfg *getConfig) *get.PrintFlags {
 	*flags.TemplateFlags.AllowMissingKeys = cfg.AllowMissingTemplateKeys
 	*flags.HumanReadableFlags.ShowLabels = cfg.ShowLabels
 	*flags.HumanReadableFlags.SortBy = cfg.SortBy
-	*flags.HumanReadableFlags.ColumnLabels = append([]string(nil), cfg.LabelColumns...)
+	*flags.HumanReadableFlags.ColumnLabels = slices.Clone(cfg.LabelColumns)
 	*flags.HumanReadableFlags.ShowKind = cfg.ShowKind
 	return flags
 }

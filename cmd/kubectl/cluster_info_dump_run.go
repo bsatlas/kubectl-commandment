@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"slices"
 
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 
@@ -36,7 +37,7 @@ func runClusterInfoDump(_ context.Context, cfg *clusterInfoDumpConfig) error {
 		PrintObj:         printer.PrintObj,
 		OutputDir:        cfg.OutputDirectory,
 		AllNamespaces:    cfg.AllNamespaces,
-		Namespaces:       append([]string(nil), cfg.Namespaces...),
+		Namespaces:       slices.Clone(cfg.Namespaces),
 		Timeout:          cfg.PodRunningTimeout,
 		AppsClient:       clientset.AppsV1(),
 		CoreClient:       clientset.CoreV1(),

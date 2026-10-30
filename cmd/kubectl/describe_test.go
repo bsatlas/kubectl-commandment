@@ -7,19 +7,16 @@ import (
 	"github.com/abstractionsinc/commandment/clitest"
 )
 
-func TestDescribeRejectsNamedResourceWithSelector(t *testing.T) {
+func TestDescribeAcceptsNamedResourceWithSelector(t *testing.T) {
 	t.Parallel()
 
 	app, err := application(pluginCatalog{})
 	if err != nil {
 		t.Fatalf("Application() error = %v", err)
 	}
-	request := cli.InspectionRequest{Args: []string{"describe", "pods", "pod-a", "--selector", "app=test"}}
+	request := cli.InspectionRequest{Args: []string{"describe", "pods", "pod-a", "-l=app=test"}}
 
-	clitest.Inspect(t.Context(), app, request).Require(t,
-		clitest.InspectionRejected(),
-		clitest.FailsWith(clitest.Diagnostic(cli.DiagnosticRuleViolation).Present()),
-	)
+	clitest.Inspect(t.Context(), app, request).Require(t, clitest.InspectionReady())
 }
 
 func TestDescribeAllowsBulkResourceWithSelector(t *testing.T) {
@@ -34,7 +31,7 @@ func TestDescribeAllowsBulkResourceWithSelector(t *testing.T) {
 	clitest.Inspect(t.Context(), app, request).Require(t, clitest.InspectionReady())
 }
 
-func TestDescribeRejectsResourceArgumentsWithFilename(t *testing.T) {
+func TestDescribeAcceptsResourceArgumentsWithFilename(t *testing.T) {
 	t.Parallel()
 
 	app, err := application(pluginCatalog{})
@@ -43,8 +40,5 @@ func TestDescribeRejectsResourceArgumentsWithFilename(t *testing.T) {
 	}
 	request := cli.InspectionRequest{Args: []string{"describe", "pods", "--filename", "pod.yaml"}}
 
-	clitest.Inspect(t.Context(), app, request).Require(t,
-		clitest.InspectionRejected(),
-		clitest.FailsWith(clitest.Diagnostic(cli.DiagnosticRuleViolation).Present()),
-	)
+	clitest.Inspect(t.Context(), app, request).Require(t, clitest.InspectionReady())
 }
