@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 
 	"github.com/abstractionsinc/commandment/cli"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/clientcmd/api"
 )
 
 type configSetContextConfig struct {
@@ -48,15 +52,20 @@ func configSetContextCommand(kubeconfig cli.Destination[rootConfig, string], cli
 				From(kubeconfig)
 
 			cluster := cb.Values.String(&cb.Config.Cluster)
-			cb.Flags.ValueFor(cluster).Description("cluster for the context entry in kubeconfig").Long("cluster")
+			clusterFlag := cb.Flags.ValueFor(cluster)
+			cb.Values.ResolveWith(clusterFlag, cli.Value.KeepLast())
+			clusterFlag.Description("cluster for the context entry in kubeconfig").Long("cluster")
 			cb.Access.ValueState(cluster, &cb.Config.ClusterState)
 
 			currentValue := cb.Values.Bool(&cb.Config.Current)
 			current := cb.Flags.ValueFor(currentValue)
+			cb.Values.ResolveWith(current, cli.Value.KeepLast())
 			current.Description("Modify the current context").Long("current").ImplicitValue(true)
 
 			namespace := cb.Values.String(&cb.Config.Namespace)
-			namespaceFlag := cb.Flags.ValueFor(namespace).Description("namespace for the context entry in kubeconfig")
+			namespaceFlag := cb.Flags.ValueFor(namespace)
+			cb.Values.ResolveWith(namespaceFlag, cli.Value.KeepLast())
+			namespaceFlag.Description("namespace for the context entry in kubeconfig")
 			namespaceFlag.CompleteBy(fixedResourceArgumentCompleter(
 				func(cfg *configSetContextConfig) (clientConfig, []string) { return cfg.Client, nil },
 				"namespace",
@@ -66,7 +75,9 @@ func configSetContextCommand(kubeconfig cli.Destination[rootConfig, string], cli
 			cb.Access.ValueState(namespace, &cb.Config.NamespaceState)
 
 			user := cb.Values.String(&cb.Config.User)
-			cb.Flags.ValueFor(user).Description("user for the context entry in kubeconfig").Long("user")
+			userFlag := cb.Flags.ValueFor(user)
+			cb.Values.ResolveWith(userFlag, cli.Value.KeepLast())
+			userFlag.Description("user for the context entry in kubeconfig").Long("user")
 			cb.Access.ValueState(user, &cb.Config.UserState)
 
 			cb.Rule.Check("kubectl-config-set-context-name", func(_ context.Context, cfg *configSetContextConfig, _ cli.Dependencies) (bool, error) {
@@ -82,4 +93,49 @@ func configSetContextCommand(kubeconfig cli.Destination[rootConfig, string], cli
 		Run: runConfigSetContext,
 	}
 	return cmd
+}
+
+func runConfigSetContext(_ context.Context, cfg *configSetContextConfig) error {
+	access := configAccess(cfg.Kubeconfig)
+	config, err := access.GetStartingConfig()
+	if err != nil {
+		return err
+	}
+
+	name := ""
+	if len(cfg.Names) == 1 {
+		name = cfg.Names[0]
+	}
+	if cfg.Current {
+		if config.CurrentContext == "" {
+			return errors.New("no current context is set")
+		}
+		name = config.CurrentContext
+	}
+
+	starting, exists := config.Contexts[name]
+	if !exists {
+		starting = api.NewContext()
+	}
+	modified := *starting
+	if flagProvided(cfg.ClusterState) {
+		modified.Cluster = cfg.Cluster
+	}
+	if flagProvided(cfg.UserState) {
+		modified.AuthInfo = cfg.User
+	}
+	if flagProvided(cfg.NamespaceState) {
+		modified.Namespace = cfg.Namespace
+	}
+	config.Contexts[name] = &modified
+
+	if err := clientcmd.ModifyConfig(access, *config, true); err != nil {
+		return err
+	}
+	if exists {
+		_, err = fmt.Fprintf(cfg.Stdout, "Context %q modified.\n", name)
+	} else {
+		_, err = fmt.Fprintf(cfg.Stdout, "Context %q created.\n", name)
+	}
+	return err
 }

@@ -128,8 +128,9 @@ func configStringCSVLanguage(name string) cli.TokenLanguage[[]string] {
 	return language
 }
 
-func configExecInteractiveModeLanguage() cli.ValueCodec[api.ExecInteractiveMode] {
-	parse := func(text string) (api.ExecInteractiveMode, error) {
+var configExecInteractiveModeLanguage = cli.ValueCodec[api.ExecInteractiveMode]{
+	Name: "exec-interactive-mode",
+	Parse: func(text string) (api.ExecInteractiveMode, error) {
 		mode := api.ExecInteractiveMode(text)
 		switch mode {
 		case api.IfAvailableExecInteractiveMode, api.NeverExecInteractiveMode, api.AlwaysExecInteractiveMode:
@@ -142,14 +143,9 @@ func configExecInteractiveModeLanguage() cli.ValueCodec[api.ExecInteractiveMode]
 			)
 			return "", err
 		}
-	}
-	language := cli.ValueCodec[api.ExecInteractiveMode]{
-		Name:     "exec-interactive-mode",
-		Parse:    parse,
-		Format:   func(mode api.ExecInteractiveMode) string { return string(mode) },
-		Snapshot: cli.Value.Assign[api.ExecInteractiveMode](),
-	}
-	return language
+	},
+	Format:   func(mode api.ExecInteractiveMode) string { return string(mode) },
+	Snapshot: cli.Value.Assign[api.ExecInteractiveMode](),
 }
 
 type configSetCredentialsConfig struct {
@@ -244,61 +240,83 @@ func configSetCredentialsCommand(kubeconfig cli.Destination[rootConfig, string])
 			cb.Rule.NotEmpty(name)
 
 			authProvider := cb.Values.String(&cb.Config.AuthProvider)
-			cb.Flags.ValueFor(authProvider).Description("Auth provider for the user entry in kubeconfig").Long("auth-provider")
+			authProviderFlag := cb.Flags.ValueFor(authProvider)
+			cb.Values.ResolveWith(authProviderFlag, cli.Value.KeepLast())
+			authProviderFlag.Description("Auth provider for the user entry in kubeconfig").Long("auth-provider")
 			cb.Access.ValueState(authProvider, &cb.Config.AuthProviderState)
 
 			authProviderArg := cb.Values.Sequence(&cb.Config.AuthProviderArg, configPairLanguage("auth-provider-arg"))
 			cb.Flags.Tokens(authProviderArg, configPairCSVLanguage("auth-provider-arg")).Description("'key=value' arguments for the auth provider").Long("auth-provider-arg")
 
 			clientCertificate := cb.Values.String(&cb.Config.ClientCertificate)
-			cb.Flags.ValueFor(clientCertificate).
+			clientCertificateFlag := cb.Flags.ValueFor(clientCertificate)
+			cb.Values.ResolveWith(clientCertificateFlag, cli.Value.KeepLast())
+			clientCertificateFlag.
 				Description("Path to client-certificate file for the user entry in kubeconfig").
 				CompleteWith(cli.CompletionNativeFiles).
 				Long("client-certificate")
 			cb.Access.ValueState(clientCertificate, &cb.Config.ClientCertificateState)
 
 			clientKey := cb.Values.String(&cb.Config.ClientKey)
-			cb.Flags.ValueFor(clientKey).
+			clientKeyFlag := cb.Flags.ValueFor(clientKey)
+			cb.Values.ResolveWith(clientKeyFlag, cli.Value.KeepLast())
+			clientKeyFlag.
 				Description("Path to client-key file for the user entry in kubeconfig").
 				CompleteWith(cli.CompletionNativeFiles).
 				Long("client-key")
 			cb.Access.ValueState(clientKey, &cb.Config.ClientKeyState)
 
 			embedCerts := cb.Values.Bool(&cb.Config.EmbedCerts)
-			cb.Flags.ValueFor(embedCerts).Description("Embed client cert/key for the user entry in kubeconfig").Long("embed-certs").ImplicitValue(true)
+			embedCertsFlag := cb.Flags.ValueFor(embedCerts)
+			cb.Values.ResolveWith(embedCertsFlag, cli.Value.KeepLast())
+			embedCertsFlag.Description("Embed client cert/key for the user entry in kubeconfig").Long("embed-certs").ImplicitValue(true)
 
 			execAPIVersion := cb.Values.String(&cb.Config.ExecAPIVersion)
-			cb.Flags.ValueFor(execAPIVersion).Description("API version of the exec credential plugin for the user entry in kubeconfig").Long("exec-api-version")
+			execAPIVersionFlag := cb.Flags.ValueFor(execAPIVersion)
+			cb.Values.ResolveWith(execAPIVersionFlag, cli.Value.KeepLast())
+			execAPIVersionFlag.Description("API version of the exec credential plugin for the user entry in kubeconfig").Long("exec-api-version")
 			cb.Access.ValueState(execAPIVersion, &cb.Config.ExecAPIVersionState)
 
 			execArg := cb.Values.Sequence(&cb.Config.ExecArg, cli.Value.String())
 			cb.Flags.Tokens(execArg, configStringCSVLanguage("exec-arg")).Description("New arguments for the exec credential plugin command for the user entry in kubeconfig").Long("exec-arg")
 
 			execCommand := cb.Values.String(&cb.Config.ExecCommand)
-			cb.Flags.ValueFor(execCommand).Description("Command for the exec credential plugin for the user entry in kubeconfig").Long("exec-command")
+			execCommandFlag := cb.Flags.ValueFor(execCommand)
+			cb.Values.ResolveWith(execCommandFlag, cli.Value.KeepLast())
+			execCommandFlag.Description("Command for the exec credential plugin for the user entry in kubeconfig").Long("exec-command")
 			cb.Access.ValueState(execCommand, &cb.Config.ExecCommandState)
 
 			execEnv := cb.Values.Sequence(&cb.Config.ExecEnv, configPairLanguage("exec-env"))
 			cb.Flags.Sequence(execEnv).Description("'key=value' environment values for the exec credential plugin").Long("exec-env")
 
-			execInteractiveMode := cb.Values.Value(&cb.Config.ExecInteractiveMode, configExecInteractiveModeLanguage())
-			cb.Flags.ValueFor(execInteractiveMode).Description("InteractiveMode of the exec credentials plugin for the user entry in kubeconfig").Long("exec-interactive-mode")
+			execInteractiveMode := cb.Values.Value(&cb.Config.ExecInteractiveMode, configExecInteractiveModeLanguage)
+			execInteractiveModeFlag := cb.Flags.ValueFor(execInteractiveMode)
+			cb.Values.ResolveWith(execInteractiveModeFlag, cli.Value.KeepLast())
+			execInteractiveModeFlag.Description("InteractiveMode of the exec credentials plugin for the user entry in kubeconfig").Long("exec-interactive-mode")
 			cb.Access.ValueState(execInteractiveMode, &cb.Config.ExecInteractiveState)
 
 			execProvideClusterInfo := cb.Values.Bool(&cb.Config.ExecProvideClusterInfo)
-			cb.Flags.ValueFor(execProvideClusterInfo).Description("ProvideClusterInfo of the exec credentials plugin for the user entry in kubeconfig").Long("exec-provide-cluster-info").ImplicitValue(true)
+			execProvideClusterInfoFlag := cb.Flags.ValueFor(execProvideClusterInfo)
+			cb.Values.ResolveWith(execProvideClusterInfoFlag, cli.Value.KeepLast())
+			execProvideClusterInfoFlag.Description("ProvideClusterInfo of the exec credentials plugin for the user entry in kubeconfig").Long("exec-provide-cluster-info").ImplicitValue(true)
 			cb.Access.ValueState(execProvideClusterInfo, &cb.Config.ExecProvideClusterState)
 
 			password := cb.Values.String(&cb.Config.Password)
-			cb.Flags.ValueFor(password).Description("password for the user entry in kubeconfig").Long("password").Sensitive()
+			passwordFlag := cb.Flags.ValueFor(password)
+			cb.Values.ResolveWith(passwordFlag, cli.Value.KeepLast())
+			passwordFlag.Description("password for the user entry in kubeconfig").Long("password").Sensitive()
 			cb.Access.ValueState(password, &cb.Config.PasswordState)
 
 			token := cb.Values.String(&cb.Config.Token)
-			cb.Flags.ValueFor(token).Description("token for the user entry in kubeconfig").Long("token").Sensitive()
+			tokenFlag := cb.Flags.ValueFor(token)
+			cb.Values.ResolveWith(tokenFlag, cli.Value.KeepLast())
+			tokenFlag.Description("token for the user entry in kubeconfig").Long("token").Sensitive()
 			cb.Access.ValueState(token, &cb.Config.TokenState)
 
 			username := cb.Values.String(&cb.Config.Username)
-			cb.Flags.ValueFor(username).Description("username for the user entry in kubeconfig").Long("username")
+			usernameFlag := cb.Flags.ValueFor(username)
+			cb.Values.ResolveWith(usernameFlag, cli.Value.KeepLast())
+			usernameFlag.Description("username for the user entry in kubeconfig").Long("username")
 			cb.Access.ValueState(username, &cb.Config.UsernameState)
 
 			cb.Rule.When(cb.When.NotEqual(token, "")).Equal(username, "")

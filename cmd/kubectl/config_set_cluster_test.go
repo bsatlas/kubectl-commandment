@@ -140,3 +140,21 @@ func TestConfigSetClusterPreservesBooleanFlagTriState(t *testing.T) {
 		})
 	}
 }
+
+func TestConfigSetClusterPreservesPflagScalarRepeatBehavior(t *testing.T) {
+	t.Parallel()
+
+	app, err := application(pluginCatalog{})
+	if err != nil {
+		t.Fatalf("Application() error = %v", err)
+	}
+	request := cli.InspectionRequest{
+		Args: []string{
+			"config", "set-cluster", "cluster",
+			"--insecure-skip-tls-verify=true",
+			"--insecure-skip-tls-verify=false",
+			"--certificate-authority=ca.crt",
+		},
+	}
+	clitest.Inspect(t.Context(), app, request).Require(t, clitest.InspectionReady())
+}

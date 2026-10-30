@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"io"
 
 	"github.com/abstractionsinc/commandment/cli"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 type configUnsetConfig struct {
@@ -32,10 +35,24 @@ func configUnsetCommand(kubeconfig cli.Destination[rootConfig, string]) cli.Comm
 		Declare: func(cb *cli.CommandBuilder[configUnsetConfig]) {
 			cb.Access.Value(kubeconfig, &cb.Config.Kubeconfig)
 			cb.Access.Stdout(&cb.Config.Stdout)
-			property := cb.Values.Value(&cb.Config.Property, configPropertyLanguage())
+			property := cb.Values.Value(&cb.Config.Property, configPropertyLanguage)
 			cb.Arguments.ValueFor(property, "PROPERTY_NAME")
 		},
-		Run: runConfigUnset,
+		Run: func(_ context.Context, cfg *configUnsetConfig) error {
+			access := configAccess(cfg.Kubeconfig)
+			config, err := access.GetStartingConfig()
+			if err != nil {
+				return err
+			}
+			if err := unsetConfigProperty(config, cfg.Property); err != nil {
+				return err
+			}
+			if err := clientcmd.ModifyConfig(access, *config, false); err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(cfg.Stdout, "Property %q unset.\n", cfg.Property.Path)
+			return err
+		},
 	}
 	return cmd
 }

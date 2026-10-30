@@ -122,3 +122,20 @@ func TestConfigViewTemplateUsesNativeFileCompletion(t *testing.T) {
 		clitest.CompletionNativeRequestAt(0).Kind(cli.CompletionNativeFiles),
 	)
 }
+
+func TestConfigViewPreservesPflagScalarSyntax(t *testing.T) {
+	t.Parallel()
+
+	app, err := application(pluginCatalog{})
+	if err != nil {
+		t.Fatalf("Application() error = %v", err)
+	}
+
+	for _, args := range [][]string{
+		{"config", "view", "-oyaml"},
+		{"config", "view", "--merge=false", "--merge=true"},
+	} {
+		request := cli.InspectionRequest{Args: args}
+		clitest.Inspect(t.Context(), app, request).Require(t, clitest.InspectionReady())
+	}
+}

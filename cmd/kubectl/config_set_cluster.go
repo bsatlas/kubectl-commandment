@@ -62,30 +62,42 @@ func configSetClusterCommand(kubeconfig cli.Destination[rootConfig, string]) cli
 			cb.Rule.NotEmpty(name)
 
 			certificateAuthority := cb.Values.String(&cb.Config.CertificateAuthority)
-			cb.Flags.ValueFor(certificateAuthority).
+			certificateAuthorityFlag := cb.Flags.ValueFor(certificateAuthority)
+			cb.Values.ResolveWith(certificateAuthorityFlag, cli.Value.KeepLast())
+			certificateAuthorityFlag.
 				Description("Path to certificate-authority file for the cluster entry in kubeconfig").
 				CompleteWith(cli.CompletionNativeFiles).
 				Long("certificate-authority")
 			cb.Access.ValueState(certificateAuthority, &cb.Config.CertificateAuthorityState)
 
 			embedCerts := cb.Values.Bool(&cb.Config.EmbedCerts)
-			cb.Flags.ValueFor(embedCerts).Description("embed-certs for the cluster entry in kubeconfig").Long("embed-certs").ImplicitValue(true)
+			embedCertsFlag := cb.Flags.ValueFor(embedCerts)
+			cb.Values.ResolveWith(embedCertsFlag, cli.Value.KeepLast())
+			embedCertsFlag.Description("embed-certs for the cluster entry in kubeconfig").Long("embed-certs").ImplicitValue(true)
 
 			insecure := cb.Values.Bool(&cb.Config.InsecureSkipTLSVerify)
 			cb.Values.Default(insecure, false)
-			cb.Flags.ValueFor(insecure).Description("insecure-skip-tls-verify for the cluster entry in kubeconfig").Long("insecure-skip-tls-verify").ImplicitValue(true)
+			insecureFlag := cb.Flags.ValueFor(insecure)
+			cb.Values.ResolveWith(insecureFlag, cli.Value.KeepLast())
+			insecureFlag.Description("insecure-skip-tls-verify for the cluster entry in kubeconfig").Long("insecure-skip-tls-verify").ImplicitValue(true)
 			cb.Access.ValueState(insecure, &cb.Config.InsecureState)
 
 			proxyURL := cb.Values.String(&cb.Config.ProxyURL)
-			cb.Flags.ValueFor(proxyURL).Description("proxy-url for the cluster entry in kubeconfig").Long("proxy-url")
+			proxyURLFlag := cb.Flags.ValueFor(proxyURL)
+			cb.Values.ResolveWith(proxyURLFlag, cli.Value.KeepLast())
+			proxyURLFlag.Description("proxy-url for the cluster entry in kubeconfig").Long("proxy-url")
 			cb.Access.ValueState(proxyURL, &cb.Config.ProxyURLState)
 
 			server := cb.Values.String(&cb.Config.Server)
-			cb.Flags.ValueFor(server).Description("server for the cluster entry in kubeconfig").Long("server")
+			serverFlag := cb.Flags.ValueFor(server)
+			cb.Values.ResolveWith(serverFlag, cli.Value.KeepLast())
+			serverFlag.Description("server for the cluster entry in kubeconfig").Long("server")
 			cb.Access.ValueState(server, &cb.Config.ServerState)
 
 			tlsServerName := cb.Values.String(&cb.Config.TLSServerName)
-			cb.Flags.ValueFor(tlsServerName).Description("tls-server-name for the cluster entry in kubeconfig").Long("tls-server-name")
+			tlsServerNameFlag := cb.Flags.ValueFor(tlsServerName)
+			cb.Values.ResolveWith(tlsServerNameFlag, cli.Value.KeepLast())
+			tlsServerNameFlag.Description("tls-server-name for the cluster entry in kubeconfig").Long("tls-server-name")
 			cb.Access.ValueState(tlsServerName, &cb.Config.TLSServerNameState)
 
 			cb.Rule.When(cb.When.Equal(insecure, true)).Equal(certificateAuthority, "")

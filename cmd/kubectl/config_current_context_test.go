@@ -7,7 +7,7 @@ import (
 	"github.com/abstractionsinc/commandment/clitest"
 )
 
-func TestCurrentContextAdmitsIgnoredArguments(t *testing.T) {
+func TestConfigCurrentContextAdmitsIgnoredArguments(t *testing.T) {
 	t.Parallel()
 
 	app, err := application(pluginCatalog{})

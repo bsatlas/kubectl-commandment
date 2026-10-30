@@ -90,3 +90,20 @@ func TestConfigSetContextTreatsKnownNamesAsCompletionCandidates(t *testing.T) {
 	}
 	clitest.Complete(t.Context(), app, completion).Require(t, clitest.CompletionItem("dev").Present())
 }
+
+func TestConfigSetContextPreservesPflagScalarSyntax(t *testing.T) {
+	t.Parallel()
+
+	app, err := application(pluginCatalog{})
+	if err != nil {
+		t.Fatalf("Application() error = %v", err)
+	}
+
+	for _, args := range [][]string{
+		{"config", "set-context", "named", "-ndev"},
+		{"config", "set-context", "named", "--current=true", "--current=false"},
+	} {
+		request := cli.InspectionRequest{Args: args}
+		clitest.Inspect(t.Context(), app, request).Require(t, clitest.InspectionReady())
+	}
+}

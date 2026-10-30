@@ -13,10 +13,6 @@ import (
 func TestConfigSetDeclaresPropertyAndValueLanguage(t *testing.T) {
 	t.Parallel()
 
-	app, err := application(pluginCatalog{})
-	if err != nil {
-		t.Fatalf("Application() error = %v", err)
-	}
 	tests := []struct {
 		name  string
 		args  []string
@@ -57,18 +53,23 @@ func TestConfigSetDeclaresPropertyAndValueLanguage(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			request := cli.InspectionRequest{
-				Args: test.args,
+			path := writeConfigTestKubeconfig(t, "dev", "dev")
+			app, err := application(pluginCatalog{})
+			if err != nil {
+				t.Fatalf("Application() error = %v", err)
 			}
-			inspection := clitest.Inspect(t.Context(), app, request)
+			args := append([]string{"--kubeconfig", path}, test.args...)
+			err = app.Run(t.Context(), cli.RunRequest{Args: args, Stdout: &bytes.Buffer{}})
 			if test.ready {
-				inspection.Require(t, clitest.InspectionReady())
+				if err != nil {
+					t.Fatalf("Run() error = %v", err)
+				}
 				return
 			}
-			inspection.Require(t,
-				clitest.InspectionRejected(),
-				clitest.FailsWith(clitest.DiagnosticAt(0).Present()),
-			)
+			if err == nil {
+				t.Fatal("Run() error = nil, want rejection")
+			}
+			clitest.Diagnostics(err).Require(t, clitest.DiagnosticAt(0).Present())
 		})
 	}
 }
@@ -181,5 +182,35 @@ func TestConfigSetMutatesKubeconfigProperties(t *testing.T) {
 				t.Fatalf("stored value = %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestConfigSetPreservesPflagScalarRepeatBehavior(t *testing.T) {
+	t.Parallel()
+
+	path := writeConfigTestKubeconfig(t, "dev", "dev")
+	app, err := application(pluginCatalog{})
+	if err != nil {
+		t.Fatalf("Application() error = %v", err)
+	}
+	request := cli.RunRequest{
+		Args: []string{
+			"--kubeconfig", path,
+			"config", "set",
+			"clusters.dev.certificate-authority-data", "not base64!",
+			"--set-raw-bytes=false",
+			"--set-raw-bytes=true",
+		},
+		Stdout: &bytes.Buffer{},
+	}
+	if err := app.Run(t.Context(), request); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	config, err := clientcmd.LoadFromFile(path)
+	if err != nil {
+		t.Fatalf("LoadFromFile() error = %v", err)
+	}
+	if got := string(config.Clusters["dev"].CertificateAuthorityData); got != "not base64!" {
+		t.Fatalf("certificate authority data = %q, want raw bytes from final --set-raw-bytes=true", got)
 	}
 }

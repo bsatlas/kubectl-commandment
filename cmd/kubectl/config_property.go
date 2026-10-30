@@ -62,24 +62,21 @@ type configProperty struct {
 	HasField bool
 }
 
-func configPropertyLanguage() cli.ValueCodec[configProperty] {
-	language := cli.ValueCodec[configProperty]{
-		Name: "kubeconfig-property",
-		Parse: func(text string) (configProperty, error) {
-			property, err := parseConfigProperty(text)
-			if err != nil {
-				return configProperty{}, cli.Rejection.Message(
-					"kubeconfig-property",
-					err.Error(),
-					cli.Rejection.At(0, 0, len(text)),
-				)
-			}
-			return property, nil
-		},
-		Format:   func(property configProperty) string { return property.Path },
-		Snapshot: func(property configProperty) configProperty { return property },
-	}
-	return language
+var configPropertyLanguage = cli.ValueCodec[configProperty]{
+	Name: "kubeconfig-property",
+	Parse: func(text string) (configProperty, error) {
+		property, err := parseConfigProperty(text)
+		if err != nil {
+			return configProperty{}, cli.Rejection.Message(
+				"kubeconfig-property",
+				err.Error(),
+				cli.Rejection.At(0, 0, len(text)),
+			)
+		}
+		return property, nil
+	},
+	Format:   func(property configProperty) string { return property.Path },
+	Snapshot: func(property configProperty) configProperty { return property },
 }
 
 func parseConfigProperty(path string) (configProperty, error) {

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"io"
 
 	"github.com/abstractionsinc/commandment/cli"
@@ -31,7 +33,21 @@ func configGetClustersCommand(kubeconfig cli.Destination[rootConfig, string]) cl
 			ignored := cb.Values.Sequence(&cb.Config.Ignored, cli.Value.String())
 			cb.Arguments.Remainder(ignored, "ARG", cli.Count.ZeroOrMore()).Hidden()
 		},
-		Run: runConfigGetClusters,
+		Run: func(_ context.Context, cfg *configGetClustersConfig) error {
+			config, err := configAccess(cfg.Kubeconfig).GetStartingConfig()
+			if err != nil {
+				return err
+			}
+			if _, err := fmt.Fprintln(cfg.Stdout, "NAME"); err != nil {
+				return err
+			}
+			for name := range config.Clusters {
+				if _, err := fmt.Fprintln(cfg.Stdout, name); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
 	}
 	return cmd
 }

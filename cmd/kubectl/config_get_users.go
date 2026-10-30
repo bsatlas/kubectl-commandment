@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"io"
 
 	"github.com/abstractionsinc/commandment/cli"
@@ -31,7 +33,21 @@ func configGetUsersCommand(kubeconfig cli.Destination[rootConfig, string]) cli.C
 			ignored := cb.Values.Sequence(&cb.Config.Ignored, cli.Value.String())
 			cb.Arguments.Remainder(ignored, "ARG", cli.Count.ZeroOrMore()).Hidden()
 		},
-		Run: runConfigGetUsers,
+		Run: func(_ context.Context, cfg *configGetUsersConfig) error {
+			names, err := userNames(cfg.Kubeconfig)
+			if err != nil {
+				return err
+			}
+			if _, err := fmt.Fprintln(cfg.Stdout, "NAME"); err != nil {
+				return err
+			}
+			for _, name := range names {
+				if _, err := fmt.Fprintln(cfg.Stdout, name); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
 	}
 	return cmd
 }

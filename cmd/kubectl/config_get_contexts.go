@@ -13,8 +13,9 @@ const (
 	configGetContextsOutputName
 )
 
-func configGetContextsOutputLanguage() cli.ValueCodec[configGetContextsOutput] {
-	parse := func(text string) (configGetContextsOutput, error) {
+var configGetContextsOutputLanguage = cli.ValueCodec[configGetContextsOutput]{
+	Name: "config-get-contexts-output",
+	Parse: func(text string) (configGetContextsOutput, error) {
 		switch text {
 		case "":
 			return configGetContextsOutputTable, nil
@@ -23,25 +24,19 @@ func configGetContextsOutputLanguage() cli.ValueCodec[configGetContextsOutput] {
 		default:
 			err := cli.Rejection.Message(
 				cli.InputRejectionCode("unsupported-config-get-contexts-output"),
-				"--output "+text+" is not available in kubectl config get-contexts",
+				"--output "+text+" is not available in kubectl config get-contexts; resetting to default output format",
 				cli.Rejection.At(0, 0, len(text)),
 			)
 			return configGetContextsOutputTable, err
 		}
-	}
-	format := func(output configGetContextsOutput) string {
+	},
+	Format: func(output configGetContextsOutput) string {
 		if output == configGetContextsOutputName {
 			return "name"
 		}
 		return ""
-	}
-	language := cli.ValueCodec[configGetContextsOutput]{
-		Name:     "config-get-contexts-output",
-		Parse:    parse,
-		Format:   format,
-		Snapshot: cli.Value.Assign[configGetContextsOutput](),
-	}
-	return language
+	},
+	Snapshot: cli.Value.Assign[configGetContextsOutput](),
 }
 
 type configGetContextsConfig struct {
@@ -78,11 +73,15 @@ func configGetContextsCommand(kubeconfig cli.Destination[rootConfig, string]) cl
 				form.Sequence(names, "CONTEXT_NAME", cli.Count.ZeroOrMore())
 			})
 
-			noHeaders := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.NoHeaders)).Description("When using the default or custom-column output format, don't print headers (default print headers).")
+			noHeaders := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.NoHeaders))
+			cb.Values.ResolveWith(noHeaders, cli.Value.KeepLast())
+			noHeaders.Description("When using the default or custom-column output format, don't print headers (default print headers).")
 			noHeaders.Long("no-headers").ImplicitValue(true)
 
-			output := cb.Values.Value(&cb.Config.Output, configGetContextsOutputLanguage())
-			outputFlag := cb.Flags.ValueFor(output).Description("Output format. One of: (name).")
+			output := cb.Values.Value(&cb.Config.Output, configGetContextsOutputLanguage)
+			outputFlag := cb.Flags.ValueFor(output)
+			cb.Values.ResolveWith(outputFlag, cli.Value.KeepLast())
+			outputFlag.Description("Output format. One of: (name).")
 			outputFlag.Long("output")
 			outputFlag.Short('o')
 		},

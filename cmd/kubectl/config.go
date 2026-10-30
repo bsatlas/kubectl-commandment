@@ -10,7 +10,7 @@ func configCommand(kubeconfig, contextName cli.Destination[rootConfig, string], 
 			Long:  "Modify kubeconfig files using subcommands like \"kubectl config set current-context my-context\".\n\n The loading order follows these rules:\n\n  1.  If the --kubeconfig flag is set, then only that file is loaded. The flag may only be set once and no merging takes place.\n  2.  If $KUBECONFIG environment variable is set, then it is used as a list of paths (normal path delimiting rules for your system). These paths are merged. When a value is modified, it is modified in the file that defines the stanza. When a value is created, it is created in the first file that exists. If no files in the chain exist, then it creates the last file in the list.\n  3.  Otherwise, ${HOME}/.kube/config is used and no merging takes place.",
 		},
 		Declare: func(cb *cli.CommandBuilder[struct{}]) {
-			currentContext := currentContextCommand(kubeconfig)
+			currentContext := configCurrentContextCommand(kubeconfig)
 			cb.Subcommands.Command(currentContext)
 
 			deleteCluster := configDeleteClusterCommand(kubeconfig)
@@ -49,7 +49,7 @@ func configCommand(kubeconfig, contextName cli.Destination[rootConfig, string], 
 			unset := configUnsetCommand(kubeconfig)
 			cb.Subcommands.Command(unset)
 
-			useContext := useContextCommand(kubeconfig)
+			useContext := configUseContextCommand(kubeconfig)
 			cb.Subcommands.Command(useContext)
 
 			view := configViewCommand(kubeconfig, contextName)

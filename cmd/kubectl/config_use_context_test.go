@@ -10,7 +10,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-func TestUseContextTreatsKnownNamesAsCompletionCandidates(t *testing.T) {
+func TestConfigUseContextTreatsKnownNamesAsCompletionCandidates(t *testing.T) {
 	t.Parallel()
 
 	path := writeConfigTestKubeconfig(t, "dev", "dev")
@@ -34,7 +34,7 @@ func TestUseContextTreatsKnownNamesAsCompletionCandidates(t *testing.T) {
 	clitest.Complete(t.Context(), app, completionRequest).Require(t, clitest.CompletionItem("dev").Present())
 }
 
-func TestUseContextMutatesSelectedKubeconfig(t *testing.T) {
+func TestConfigUseContextMutatesSelectedKubeconfig(t *testing.T) {
 	t.Parallel()
 
 	path := writeConfigTestKubeconfig(t, "old", "old", "dev")
