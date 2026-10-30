@@ -3,13 +3,14 @@ package main
 import (
 	"context"
 	"net/url"
-
+	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/abstractionsinc/commandment/cli"
-
 	"k8s.io/cli-runtime/pkg/genericiooptions"
 	"k8s.io/kubectl/pkg/cmd/create"
+	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 	"k8s.io/kubectl/pkg/util"
 )
 
@@ -18,12 +19,13 @@ type createConfig struct {
 	Streams                  genericiooptions.IOStreams
 	AllowMissingTemplateKeys bool
 	Direct                   bool
-	DryRun                   string
+	DryRun                   cmdutil.DryRunStrategy
 	Edit                     bool
 	FieldManager             string
-	Filename                 []string
+	Filename                 [][]string
 	Kustomize                string
 	Output                   string
+	OutputState              cli.OptionalValue[cli.ValueState]
 	Raw                      string
 	Record                   bool
 	Recursive                bool
@@ -66,86 +68,100 @@ func createCommand(client cli.Destination[rootConfig, clientConfig], plugins []p
 			cb.Arguments.Form(func(_ *cli.ArgumentFormBuilder[createConfig]) {}).Selects(direct, true)
 			directRules := cb.Rule.When(cb.Rule.ContributedBy(direct, cli.ValueProducerKindArgument))
 
-			allowMissingTemplateKeysFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.AllowMissingTemplateKeys))
-			allowMissingTemplateKeysFlag = allowMissingTemplateKeysFlag.Description("If true, ignore any errors in templates when a field or map key is missing in the template. Only applies to golang and jsonpath output formats.")
-			cb.Values.Default(allowMissingTemplateKeysFlag, true)
-			allowMissingTemplateKeysFlag.Long("allow-missing-template-keys").ImplicitValue(true)
+			allowMissingTemplateKeys := cb.Values.Bool(&cb.Config.AllowMissingTemplateKeys)
+			allowMissingTemplateKeysFlag := cb.Flags.ValueFor(allowMissingTemplateKeys)
+			cb.Values.ResolveWith(allowMissingTemplateKeysFlag, cli.Value.KeepLast())
+			allowMissingTemplateKeysFlag.Description("If true, ignore any errors in templates when a field or map key is missing in the template. Only applies to golang and jsonpath output formats.").Long("allow-missing-template-keys").ImplicitValue(true)
+			cb.Values.Default(allowMissingTemplateKeys, true)
 
-			dryRunFlag := cb.Flags.String(&cb.Config.DryRun)
-			dryRunFlag = dryRunFlag.Description("Must be \"none\", \"server\", or \"client\". If client strategy, only print the object that would be sent, without sending it. If server strategy, submit server-side request without persisting the resource.")
-			cb.Values.Default(dryRunFlag, "none")
-			dryRunFlagLong := dryRunFlag.Long("dry-run")
-			dryRunFlagLong.ImplicitValue("unchanged")
+			outputValue := cb.Values.Value(&cb.Config.Output, printOutputLanguage)
+			outputFlag := cb.Flags.ValueFor(outputValue)
+			cb.Values.ResolveWith(outputFlag, cli.Value.KeepLast())
+			outputFlag.Description("Output format. One of: (json, yaml, kyaml, name, go-template, go-template-file, template, templatefile, jsonpath, jsonpath-as-json, jsonpath-file).").CompleteBy(completePrintOutputFormat[createConfig]).Long("output")
+			outputFlag.Short('o').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormAssigned, cli.FlagValueFormJoined)
+			cb.Access.ValueState(outputValue, &cb.Config.OutputState)
+
+			showManagedFieldsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowManagedFields))
+			cb.Values.ResolveWith(showManagedFieldsFlag, cli.Value.KeepLast())
+			showManagedFieldsFlag.Description("If true, keep the managedFields when printing objects in JSON or YAML format.").Long("show-managed-fields").ImplicitValue(true)
+
+			templateValue := cb.Values.String(&cb.Config.Template)
+			templateFlag := cb.Flags.ValueFor(templateValue)
+			cb.Values.ResolveWith(templateFlag, cli.Value.KeepLast())
+			templateFlag.Description("Template string or path to template file to use when -o=go-template, -o=go-template-file. The template format is golang templates [http://golang.org/pkg/text/template/#pkg-overview].").CompleteWith(cli.CompletionNativeFiles).Long("template")
+			declarePrintOutputTemplateRule(cb, outputFlag, templateFlag)
+
+			dryRun := cb.Values.Value(&cb.Config.DryRun, dryRunValueLanguage)
+			dryRunFlag := cb.Flags.ValueFor(dryRun)
+			cb.Values.ResolveWith(dryRunFlag, cli.Value.KeepLast())
+			dryRunFlag.Description("Must be \"none\", \"server\", or \"client\". If client strategy, only print the object that would be sent, without sending it. If server strategy, submit server-side request without persisting the resource.").Long("dry-run").ImplicitValue(cmdutil.DryRunClient)
+			cb.Values.Default(dryRun, cmdutil.DryRunNone)
 
 			editFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Edit))
-			editFlag = editFlag.Description("Edit the API resource before creating")
+			cb.Values.ResolveWith(editFlag, cli.Value.KeepLast())
+			editFlag.Description("Edit the API resource before creating")
 			editFlag.Long("edit").ImplicitValue(true)
 
 			fieldManagerFlag := cb.Flags.String(&cb.Config.FieldManager)
-			fieldManagerFlag = fieldManagerFlag.Description("Name of the manager used to track field ownership.")
+			cb.Values.ResolveWith(fieldManagerFlag, cli.Value.KeepLast())
+			fieldManagerFlag.Description("Name of the manager used to track field ownership.")
 			cb.Values.Default(fieldManagerFlag, "kubectl-create")
 			fieldManagerFlag.Long("field-manager")
 
-			filenameValue := cb.Values.Sequence(&cb.Config.Filename, cli.Value.String())
+			filenameValue := cb.Values.Sequence(&cb.Config.Filename, filenameListLanguage)
 			filenameFlag := cb.Flags.Sequence(filenameValue)
-			filenameFlag = filenameFlag.DelimitedBy(",")
-			filenameFlag = filenameFlag.Description("Filename, directory, or URL to files to use to create the resource")
+			filenameFlag.Description("Filename, directory, or URL to files to use to create the resource")
 			filenameFlag.Long("filename")
-			filenameFlag.Short('f').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
+			filenameFlag.Short('f').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormAssigned, cli.FlagValueFormJoined)
 
 			kustomizeFlag := cb.Flags.String(&cb.Config.Kustomize)
-			kustomizeFlag = kustomizeFlag.Description("Process the kustomization directory. This flag can't be used together with -f or -R.")
+			cb.Values.ResolveWith(kustomizeFlag, cli.Value.KeepLast())
+			kustomizeFlag.Description("Process the kustomization directory. This flag can't be used together with -f or -R.")
 			kustomizeFlag.Long("kustomize")
-			kustomizeFlag.Short('k').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
-
-			outputFlag := cb.Flags.String(&cb.Config.Output)
-			outputFlag = outputFlag.Description("Output format. One of: (json, yaml, kyaml, name, go-template, go-template-file, template, templatefile, jsonpath, jsonpath-as-json, jsonpath-file).")
-			outputFlag.Long("output")
-			outputFlag.Short('o').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
+			kustomizeFlag.Short('k').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormAssigned, cli.FlagValueFormJoined)
 
 			rawFlag := cb.Flags.String(&cb.Config.Raw)
-			rawFlag = rawFlag.Description("Raw URI to POST to the server.  Uses the transport specified by the kubeconfig file.")
+			cb.Values.ResolveWith(rawFlag, cli.Value.KeepLast())
+			rawFlag.Description("Raw URI to POST to the server.  Uses the transport specified by the kubeconfig file.")
 			rawFlag.Long("raw")
 
 			recordFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Record))
-			recordFlag = recordFlag.Description("Record current kubectl command in the resource annotation. If set to false, do not record the command. If set to true, record the command. If not set, default to updating the existing annotation value only if one already exists.")
-			recordFlag = recordFlag.Hidden().Release(preexistingDeprecation("--record will be removed in the future"))
+			cb.Values.ResolveWith(recordFlag, cli.Value.KeepLast())
+			recordFlag.Description("Record current kubectl command in the resource annotation. If set to false, do not record the command. If set to true, record the command. If not set, default to updating the existing annotation value only if one already exists.")
+			recordFlag.Hidden().Release(preexistingDeprecation("--record will be removed in the future"))
 			recordFlag.Long("record").ImplicitValue(true)
 
 			recursiveFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Recursive))
-			recursiveFlag = recursiveFlag.Description("Process the directory used in -f, --filename recursively. Useful when you want to manage related manifests organized within the same directory.")
+			cb.Values.ResolveWith(recursiveFlag, cli.Value.KeepLast())
+			recursiveFlag.Description("Process the directory used in -f, --filename recursively. Useful when you want to manage related manifests organized within the same directory.")
 			recursiveFlag.Long("recursive").ImplicitValue(true)
 			recursiveFlag.Short('R').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
 
 			saveConfigFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.SaveConfig))
-			saveConfigFlag = saveConfigFlag.Description("If true, the configuration of current object will be saved in its annotation. Otherwise, the annotation will be unchanged. This flag is useful when you want to perform kubectl apply on this object in the future.")
+			cb.Values.ResolveWith(saveConfigFlag, cli.Value.KeepLast())
+			saveConfigFlag.Description("If true, the configuration of current object will be saved in its annotation. Otherwise, the annotation will be unchanged. This flag is useful when you want to perform kubectl apply on this object in the future.")
 			saveConfigFlag.Long("save-config").ImplicitValue(true)
 
 			selectorFlag := cb.Flags.String(&cb.Config.Selector)
-			selectorFlag = selectorFlag.Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
+			cb.Values.ResolveWith(selectorFlag, cli.Value.KeepLast())
+			selectorFlag.Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
 			selectorFlag.Long("selector")
-			selectorFlag.Short('l').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
-
-			showManagedFieldsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowManagedFields))
-			showManagedFieldsFlag = showManagedFieldsFlag.Description("If true, keep the managedFields when printing objects in JSON or YAML format.")
-			showManagedFieldsFlag.Long("show-managed-fields").ImplicitValue(true)
-
-			templateFlag := cb.Flags.String(&cb.Config.Template)
-			templateFlag = templateFlag.Description("Template string or path to template file to use when -o=go-template, -o=go-template-file. The template format is golang templates [http://golang.org/pkg/text/template/#pkg-overview].")
-			templateFlag.Long("template")
+			selectorFlag.Short('l').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormAssigned, cli.FlagValueFormJoined)
 
 			validateFlag := cb.Flags.String(&cb.Config.Validate)
-			validateFlag = validateFlag.Description("Must be one of: strict (or true), warn, ignore (or false). \"true\" or \"strict\" will use a schema to validate the input and fail the request if invalid. It will perform server side validation if ServerSideFieldValidation is enabled on the api-server, but will fall back to less reliable client-side validation if not. \"warn\" will warn about unknown or duplicate fields without blocking the request if server-side field validation is enabled on the API server, and behave as \"ignore\" otherwise. \"false\" or \"ignore\" will not perform any schema validation, silently dropping any unknown or duplicate fields.")
+			cb.Values.ResolveWith(validateFlag, cli.Value.KeepLast())
+			validateFlag.Description("Must be one of: strict (or true), warn, ignore (or false). \"true\" or \"strict\" will use a schema to validate the input and fail the request if invalid. It will perform server side validation if ServerSideFieldValidation is enabled on the api-server, but will fall back to less reliable client-side validation if not. \"warn\" will warn about unknown or duplicate fields without blocking the request if server-side field validation is enabled on the API server, and behave as \"ignore\" otherwise. \"false\" or \"ignore\" will not perform any schema validation, silently dropping any unknown or duplicate fields.")
 			cb.Values.Default(validateFlag, "strict")
 			validateFlagLong := validateFlag.Long("validate")
 			validateFlagLong.ImplicitValue("strict")
 
 			windowsLineEndingsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.WindowsLineEndings))
-			windowsLineEndingsFlag = windowsLineEndingsFlag.Description("Only relevant if --edit=true. Defaults to the line ending native to your platform.")
-			windowsLineEndingsFlag.Long("windows-line-endings").ImplicitValue(true)
+			cb.Values.ResolveWith(windowsLineEndingsFlag, cli.Value.KeepLast())
+			windowsLineEndingsFlag.Description("Only relevant if --edit=true. Defaults to the line ending native to your platform.").Long("windows-line-endings").ImplicitValue(true)
+			cb.Values.Default(windowsLineEndingsFlag, runtime.GOOS == "windows")
 
 			directRules.Check("kubectl-create-source", func(_ context.Context, cfg *createConfig, _ cli.Dependencies) (bool, error) {
-				filename := len(cfg.Filename) > 0
+				filename := len(slices.Concat(cfg.Filename...)) > 0
 				kustomize := cfg.Kustomize != ""
 				return filename != kustomize, nil
 			}).
@@ -160,10 +176,11 @@ func createCommand(client cli.Destination[rootConfig, clientConfig], plugins []p
 				if cfg.Raw == "" {
 					return true, nil
 				}
-				if len(cfg.Filename) != 1 {
+				filenames := slices.Concat(cfg.Filename...)
+				if len(filenames) != 1 {
 					return false, nil
 				}
-				filename := cfg.Filename[0]
+				filename := filenames[0]
 				return !strings.HasPrefix(filename, "http://") && !strings.HasPrefix(filename, "https://"), nil
 			}).
 				DependsOn(rawFlag.Destination().OptionalDependency()).
@@ -243,68 +260,59 @@ func createCommand(client cli.Destination[rootConfig, clientConfig], plugins []p
 	return cmd
 }
 
-func createFileSourceLanguage() cli.ValueCodec[string] {
-	codec := cli.ValueCodec[string]{
-		Name: "file-source",
-		Parse: func(value string) (string, error) {
-			if _, _, err := util.ParseFileSource(value); err != nil {
-				return "", cli.Rejection.Message("file-source", err.Error(), cli.Rejection.At(0, 0, len(value)))
-			}
-			return value, nil
-		},
-		Format:   func(value string) string { return value },
-		Snapshot: func(value string) string { return value },
-	}
-	return codec
+var createFileSourceLanguage = cli.ValueCodec[string]{
+	Name: "file-source",
+	Parse: func(value string) (string, error) {
+		if _, _, err := util.ParseFileSource(value); err != nil {
+			return "", cli.Rejection.Message("file-source", err.Error(), cli.Rejection.At(0, 0, len(value)))
+		}
+		return value, nil
+	},
+	Format:   func(value string) string { return value },
+	Snapshot: func(value string) string { return value },
 }
 
-func createLiteralSourceLanguage() cli.ValueCodec[string] {
-	codec := cli.ValueCodec[string]{
-		Name: "literal-source",
-		Parse: func(value string) (string, error) {
-			if _, _, err := util.ParseLiteralSource(value); err != nil {
-				return "", cli.Rejection.Message("literal-source", err.Error(), cli.Rejection.At(0, 0, len(value)))
-			}
-			return value, nil
-		},
-		Format:   func(value string) string { return value },
-		Snapshot: func(value string) string { return value },
-	}
-	return codec
+var createLiteralSourceLanguage = cli.ValueCodec[string]{
+	Name: "literal-source",
+	Parse: func(value string) (string, error) {
+		if _, _, err := util.ParseLiteralSource(value); err != nil {
+			return "", cli.Rejection.Message("literal-source", err.Error(), cli.Rejection.At(0, 0, len(value)))
+		}
+		return value, nil
+	},
+	Format:   func(value string) string { return value },
+	Snapshot: func(value string) string { return value },
 }
 
-func createRoleResourceLanguage() cli.ValueCodec[create.ResourceOptions] {
-	codec := cli.ValueCodec[create.ResourceOptions]{
-		Name: "rbac-resource",
-		Parse: func(value string) (create.ResourceOptions, error) {
-			sections := strings.SplitN(value, "/", 2)
-			resource := create.ResourceOptions{}
-			if len(sections) == 2 {
-				resource.SubResource = sections[1]
-			}
-			parts := strings.SplitN(sections[0], ".", 2)
-			resource.Resource = parts[0]
-			if len(parts) == 2 {
-				resource.Group = parts[1]
-			}
-			if resource.Resource == "" {
-				return create.ResourceOptions{}, cli.Rejection.Message("rbac-resource", "resource must be specified", cli.Rejection.At(0, 0, len(value)))
-			}
-			return resource, nil
-		},
-		Format: func(value create.ResourceOptions) string {
-			resource := value.Resource
-			if value.Group != "" {
-				resource += "." + value.Group
-			}
-			if value.SubResource != "" {
-				resource += "/" + value.SubResource
-			}
-			return resource
-		},
-		Snapshot: func(value create.ResourceOptions) create.ResourceOptions { return value },
-	}
-	return codec
+var createRoleResourceLanguage = cli.ValueCodec[create.ResourceOptions]{
+	Name: "rbac-resource",
+	Parse: func(value string) (create.ResourceOptions, error) {
+		sections := strings.SplitN(value, "/", 2)
+		resource := create.ResourceOptions{}
+		if len(sections) == 2 {
+			resource.SubResource = sections[1]
+		}
+		parts := strings.SplitN(sections[0], ".", 2)
+		resource.Resource = parts[0]
+		if len(parts) == 2 {
+			resource.Group = parts[1]
+		}
+		if resource.Resource == "" {
+			return create.ResourceOptions{}, cli.Rejection.Message("rbac-resource", "resource must be specified", cli.Rejection.At(0, 0, len(value)))
+		}
+		return resource, nil
+	},
+	Format: func(value create.ResourceOptions) string {
+		resource := value.Resource
+		if value.Group != "" {
+			resource += "." + value.Group
+		}
+		if value.SubResource != "" {
+			resource += "/" + value.SubResource
+		}
+		return resource
+	},
+	Snapshot: func(value create.ResourceOptions) create.ResourceOptions { return value },
 }
 
 func uniqueCreateStrings(values []string) []string {
@@ -335,21 +343,18 @@ func normalizeCreateRoleResources(values []create.ResourceOptions) []create.Reso
 			return []create.ResourceOptions{value}
 		}
 	}
-	return append([]create.ResourceOptions(nil), values...)
+	return slices.Clone(values)
 }
 
-func roleBindingServiceAccountLanguage() cli.ValueCodec[string] {
-	codec := cli.ValueCodec[string]{
-		Name: "service-account-subject",
-		Parse: func(value string) (string, error) {
-			parts := strings.Split(value, ":")
-			if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-				return "", cli.Rejection.Message("service-account-subject", "expected namespace:name", cli.Rejection.At(0, 0, len(value)))
-			}
-			return value, nil
-		},
-		Format:   func(value string) string { return value },
-		Snapshot: func(value string) string { return value },
-	}
-	return codec
+var roleBindingServiceAccountLanguage = cli.ValueCodec[string]{
+	Name: "service-account-subject",
+	Parse: func(value string) (string, error) {
+		parts := strings.Split(value, ":")
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return "", cli.Rejection.Message("service-account-subject", "expected namespace:name", cli.Rejection.At(0, 0, len(value)))
+		}
+		return value, nil
+	},
+	Format:   func(value string) string { return value },
+	Snapshot: func(value string) string { return value },
 }

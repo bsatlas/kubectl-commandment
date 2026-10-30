@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -12,24 +13,20 @@ import (
 	"k8s.io/cli-runtime/pkg/printers"
 	"k8s.io/cli-runtime/pkg/resource"
 	"k8s.io/klog/v2"
-
 	"k8s.io/kubectl/pkg/cmd/create"
 	"k8s.io/kubectl/pkg/cmd/util"
 	"k8s.io/kubectl/pkg/rawhttp"
 	"k8s.io/kubectl/pkg/scheme"
 )
 
-func runCreate(_ context.Context, cfg *createConfig) error {
+func runCreate(ctx context.Context, cfg *createConfig) error {
 	filename := resource.FilenameOptions{
-		Filenames: append([]string(nil), cfg.Filename...),
+		Filenames: slices.Concat(cfg.Filename...),
 		Kustomize: cfg.Kustomize,
 		Recursive: cfg.Recursive,
 	}
-	strategy, err := dryRunStrategy(cfg.DryRun)
-	if err != nil {
-		return err
-	}
-	factory := cfg.Client.factory()
+	strategy := cfg.DryRun
+	factory := cfg.Client.factoryForInvocation(ctx)
 	if cfg.Raw != "" {
 		client, err := factory.RESTClient()
 		if err != nil {
@@ -41,7 +38,11 @@ func runCreate(_ context.Context, cfg *createConfig) error {
 		return runCreateEdit(cfg, factory, filename, strategy)
 	}
 
-	validation, err := factory.Validator(cfg.Validate)
+	validationDirective, err := validationDirective(cfg.Validate)
+	if err != nil {
+		return err
+	}
+	validation, err := factory.Validator(validationDirective)
 	if err != nil {
 		return err
 	}
@@ -51,7 +52,7 @@ func runCreate(_ context.Context, cfg *createConfig) error {
 	}
 
 	printFlags := genericclioptions.NewPrintFlags("created").WithTypeSetter(scheme.Scheme)
-	configurePrintFlags(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
+	configurePrintFlagsWithOutputState(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields, cfg.OutputState)
 	util.PrintFlagsWithDryRunStrategy(printFlags, strategy)
 	printer, err := printFlags.ToPrinter()
 	if err != nil {
@@ -70,12 +71,13 @@ func runCreate(_ context.Context, cfg *createConfig) error {
 		return err
 	}
 
-	result := factory.NewBuilder().
+	builder := factory.NewBuilder().
 		Unstructured().
 		Schema(validation).
 		ContinueOnError().
-		NamespaceParam(namespace).DefaultNamespace().
-		FilenameParam(enforceNamespace, &filename).
+		NamespaceParam(namespace).DefaultNamespace()
+	addFilenameSources(builder, enforceNamespace, filename, cfg.Streams.In)
+	result := builder.
 		LabelSelectorParam(cfg.Selector).
 		Flatten().
 		Do()
@@ -98,7 +100,7 @@ func runCreate(_ context.Context, cfg *createConfig) error {
 			object, err := resource.NewHelper(info.Client, info.Mapping).
 				DryRun(strategy == util.DryRunServer).
 				WithFieldManager(cfg.FieldManager).
-				WithFieldValidation(cfg.Validate).
+				WithFieldValidation(validationDirective).
 				Create(info.Namespace, true, info.Object)
 			if err != nil {
 				return util.AddSourceToErr("creating", info.Source, err)
@@ -123,12 +125,13 @@ func runCreateEdit(cfg *createConfig, factory util.Factory, filename resource.Fi
 		return err
 	}
 
-	result := factory.NewBuilder().
+	builder := factory.NewBuilder().
 		Unstructured().
 		NamespaceParam(namespace).
 		DefaultNamespace().
-		FilenameParam(enforceNamespace, &filename).
-		ContinueOnError().
+		ContinueOnError()
+	addFilenameSources(builder, enforceNamespace, filename, cfg.Streams.In)
+	result := builder.
 		Flatten().
 		Do()
 	if err := result.Err(); err != nil {
@@ -141,7 +144,7 @@ func runCreateEdit(cfg *createConfig, factory util.Factory, filename resource.Fi
 	}
 
 	printFlags := genericclioptions.NewPrintFlags("created").WithTypeSetter(scheme.Scheme)
-	configurePrintFlags(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
+	configurePrintFlagsWithOutputState(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields, cfg.OutputState)
 	util.PrintFlagsWithDryRunStrategy(printFlags, strategy)
 	toPrinter := func(operation string) (printers.ResourcePrinter, error) {
 		printFlags.NamePrintFlags.Operation = operation
@@ -214,7 +217,7 @@ func warnCreateRoleVerbs(out io.Writer, verbs []string) {
 	}
 }
 
-func createRoleSpecialVerbAllows(verb string, resource schema.GroupVersionResource) (special bool, allowed bool) {
+func createRoleSpecialVerbAllows(verb string, resource schema.GroupVersionResource) (special, allowed bool) {
 	switch verb {
 	case "use":
 		allowed := resource.Resource == "podsecuritypolicies" && (resource.Group == "policy" || resource.Group == "extensions")

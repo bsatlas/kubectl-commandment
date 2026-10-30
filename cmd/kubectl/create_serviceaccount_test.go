@@ -7,7 +7,7 @@ import (
 	"github.com/abstractionsinc/commandment/clitest"
 )
 
-func TestCreateServiceaccountFrontendRejectsInvalidKubectlSemantics(t *testing.T) {
+func TestCreateServiceAccountFrontendRejectsInvalidKubectlSemantics(t *testing.T) {
 	t.Parallel()
 
 	app, err := application(pluginCatalog{})
@@ -27,7 +27,9 @@ func TestCreateServiceaccountFrontendRejectsInvalidKubectlSemantics(t *testing.T
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			request := cli.InspectionRequest{Args: test.args}
+			request := cli.InspectionRequest{
+				Args: test.args,
+			}
 			clitest.Inspect(t.Context(), app, request).Require(
 				t,
 				clitest.InspectionRejected(),
@@ -35,4 +37,21 @@ func TestCreateServiceaccountFrontendRejectsInvalidKubectlSemantics(t *testing.T
 			)
 		})
 	}
+}
+
+func TestCreateServiceAccountFrontendUsesPflagLastOccurrenceSemantics(t *testing.T) {
+	t.Parallel()
+
+	app, err := application(pluginCatalog{})
+	if err != nil {
+		t.Fatalf("Application() error = %v", err)
+	}
+	request := cli.InspectionRequest{
+		Args: []string{"create", "serviceaccount", "builder", "--field-manager=first", "--field-manager=second"},
+	}
+	clitest.Inspect(t.Context(), app, request).Require(
+		t,
+		clitest.InspectionReady(),
+		clitest.Command("create", "serviceaccount").Flag("--field-manager").Value().Text("second"),
+	)
 }

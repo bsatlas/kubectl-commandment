@@ -1,9 +1,13 @@
 package main
 
 import (
-	"github.com/abstractionsinc/commandment/cli"
+	"context"
 
+	"github.com/abstractionsinc/commandment/cli"
 	"k8s.io/cli-runtime/pkg/genericiooptions"
+	v1 "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/kubectl/pkg/cmd/create"
+	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 )
 
 type createServiceAccountConfig struct {
@@ -12,9 +16,10 @@ type createServiceAccountConfig struct {
 	Name                     string
 	TrailingArguments        []string
 	AllowMissingTemplateKeys bool
-	DryRun                   string
+	DryRun                   cmdutil.DryRunStrategy
 	FieldManager             string
 	Output                   string
+	OutputState              cli.OptionalValue[cli.ValueState]
 	SaveConfig               bool
 	ShowManagedFields        bool
 	Template                 string
@@ -56,41 +61,35 @@ func createServiceAccountCommand(client cli.Destination[rootConfig, clientConfig
 
 			cb.Rule.NotEmpty(name)
 
-			allowMissingTemplateKeysFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.AllowMissingTemplateKeys))
-			allowMissingTemplateKeysFlag = allowMissingTemplateKeysFlag.Description("If true, ignore any errors in templates when a field or map key is missing in the template. Only applies to golang and jsonpath output formats.")
-			cb.Values.Default(allowMissingTemplateKeysFlag, true)
-			allowMissingTemplateKeysFlag.Long("allow-missing-template-keys").ImplicitValue(true)
+			declarePrintFlags(
+				cb,
+				&cb.Config.Output,
+				&cb.Config.OutputState,
+				&cb.Config.Template,
+				&cb.Config.AllowMissingTemplateKeys,
+				&cb.Config.ShowManagedFields,
+			)
 
-			dryRunFlag := cb.Flags.String(&cb.Config.DryRun)
-			dryRunFlag = dryRunFlag.Description("Must be \"none\", \"server\", or \"client\". If client strategy, only print the object that would be sent, without sending it. If server strategy, submit server-side request without persisting the resource.")
-			cb.Values.Default(dryRunFlag, "none")
-			dryRunFlagLong := dryRunFlag.Long("dry-run")
-			dryRunFlagLong.ImplicitValue("unchanged")
+			dryRun := cb.Values.Value(&cb.Config.DryRun, dryRunValueLanguage)
+			dryRunFlag := cb.Flags.ValueFor(dryRun)
+			cb.Values.ResolveWith(dryRunFlag, cli.Value.KeepLast())
+			dryRunFlag.Description("Must be \"none\", \"server\", or \"client\". If client strategy, only print the object that would be sent, without sending it. If server strategy, submit server-side request without persisting the resource.").Long("dry-run").ImplicitValue(cmdutil.DryRunClient)
+			cb.Values.Default(dryRun, cmdutil.DryRunNone)
 
 			fieldManagerFlag := cb.Flags.String(&cb.Config.FieldManager)
-			fieldManagerFlag = fieldManagerFlag.Description("Name of the manager used to track field ownership.")
+			cb.Values.ResolveWith(fieldManagerFlag, cli.Value.KeepLast())
+			fieldManagerFlag.Description("Name of the manager used to track field ownership.")
 			cb.Values.Default(fieldManagerFlag, "kubectl-create")
 			fieldManagerFlag.Long("field-manager")
 
-			outputFlag := cb.Flags.String(&cb.Config.Output)
-			outputFlag = outputFlag.Description("Output format. One of: (json, yaml, kyaml, name, go-template, go-template-file, template, templatefile, jsonpath, jsonpath-as-json, jsonpath-file).")
-			outputFlag.Long("output")
-			outputFlag.Short('o').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
-
 			saveConfigFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.SaveConfig))
-			saveConfigFlag = saveConfigFlag.Description("If true, the configuration of current object will be saved in its annotation. Otherwise, the annotation will be unchanged. This flag is useful when you want to perform kubectl apply on this object in the future.")
+			cb.Values.ResolveWith(saveConfigFlag, cli.Value.KeepLast())
+			saveConfigFlag.Description("If true, the configuration of current object will be saved in its annotation. Otherwise, the annotation will be unchanged. This flag is useful when you want to perform kubectl apply on this object in the future.")
 			saveConfigFlag.Long("save-config").ImplicitValue(true)
 
-			showManagedFieldsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowManagedFields))
-			showManagedFieldsFlag = showManagedFieldsFlag.Description("If true, keep the managedFields when printing objects in JSON or YAML format.")
-			showManagedFieldsFlag.Long("show-managed-fields").ImplicitValue(true)
-
-			templateFlag := cb.Flags.String(&cb.Config.Template)
-			templateFlag = templateFlag.Description("Template string or path to template file to use when -o=go-template, -o=go-template-file. The template format is golang templates [http://golang.org/pkg/text/template/#pkg-overview].")
-			templateFlag.Long("template")
-
 			validateFlag := cb.Flags.String(&cb.Config.Validate)
-			validateFlag = validateFlag.Description("Must be one of: strict (or true), warn, ignore (or false). \"true\" or \"strict\" will use a schema to validate the input and fail the request if invalid. It will perform server side validation if ServerSideFieldValidation is enabled on the api-server, but will fall back to less reliable client-side validation if not. \"warn\" will warn about unknown or duplicate fields without blocking the request if server-side field validation is enabled on the API server, and behave as \"ignore\" otherwise. \"false\" or \"ignore\" will not perform any schema validation, silently dropping any unknown or duplicate fields.")
+			cb.Values.ResolveWith(validateFlag, cli.Value.KeepLast())
+			validateFlag.Description("Must be one of: strict (or true), warn, ignore (or false). \"true\" or \"strict\" will use a schema to validate the input and fail the request if invalid. It will perform server side validation if ServerSideFieldValidation is enabled on the api-server, but will fall back to less reliable client-side validation if not. \"warn\" will warn about unknown or duplicate fields without blocking the request if server-side field validation is enabled on the API server, and behave as \"ignore\" otherwise. \"false\" or \"ignore\" will not perform any schema validation, silently dropping any unknown or duplicate fields.")
 			cb.Values.Default(validateFlag, "strict")
 			validateFlagLong := validateFlag.Long("validate")
 			validateFlagLong.ImplicitValue("strict")
@@ -98,4 +97,36 @@ func createServiceAccountCommand(client cli.Destination[rootConfig, clientConfig
 		Run: runCreateServiceAccount,
 	}
 	return cmd
+}
+
+func runCreateServiceAccount(ctx context.Context, cfg *createServiceAccountConfig) error {
+	factory := cfg.Client.factoryForInvocation(ctx)
+	options := create.NewServiceAccountOpts(cfg.Streams)
+	options.Name = cfg.Name
+	options.FieldManager = cfg.FieldManager
+	options.CreateAnnotation = cfg.SaveConfig
+
+	restConfig, err := factory.ToRESTConfig()
+	if err != nil {
+		return err
+	}
+	options.Client, err = v1.NewForConfig(restConfig)
+	if err != nil {
+		return err
+	}
+	options.Namespace, options.EnforceNamespace, err = factory.ToRawKubeConfigLoader().Namespace()
+	if err != nil {
+		return err
+	}
+	options.DryRunStrategy = cfg.DryRun
+	options.ValidationDirective, err = validationDirective(cfg.Validate)
+	if err != nil {
+		return err
+	}
+	configurePrintFlagsWithOutputState(options.PrintFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields, cfg.OutputState)
+	options.PrintObj, err = printObject(options.PrintFlags, options.DryRunStrategy, cfg.Streams.Out)
+	if err != nil {
+		return err
+	}
+	return options.Run()
 }
