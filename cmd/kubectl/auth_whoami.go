@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"io"
 
 	"github.com/abstractionsinc/commandment/cli"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
+	"k8s.io/kubectl/pkg/cmd/auth"
 )
 
 type authWhoAmIConfig struct {
@@ -11,6 +14,7 @@ type authWhoAmIConfig struct {
 	Stdout io.Writer
 
 	AllowMissingTemplateKeys bool
+	Ignored                  []string
 	Output                   string
 	OutputState              cli.OptionalValue[cli.ValueState]
 	ShowManagedFields        bool
@@ -38,6 +42,9 @@ func authWhoAmICommand(client cli.Destination[rootConfig, clientConfig]) cli.Com
 			cb.Access.Value(client, &cb.Config.Client)
 			cb.Access.Stdout(&cb.Config.Stdout)
 
+			ignored := cb.Values.Sequence(&cb.Config.Ignored, cli.Value.String())
+			cb.Arguments.Remainder(ignored, "ARG", cli.Count.ZeroOrMore()).Hidden()
+
 			declarePrintFlags(
 				cb,
 				&cb.Config.Output,
@@ -47,7 +54,18 @@ func authWhoAmICommand(client cli.Destination[rootConfig, clientConfig]) cli.Com
 				&cb.Config.ShowManagedFields,
 			)
 		},
-		Run: runAuthWhoAmI,
+		Run: func(ctx context.Context, cfg *authWhoAmIConfig) error {
+			streams := genericiooptions.IOStreams{
+				Out: cfg.Stdout,
+			}
+			flags := auth.NewWhoAmIFlags(restClientGetterForInvocation(ctx, cfg.Client), streams)
+			configurePrintFlagsWithOutputState(flags.PrintFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields, cfg.OutputState)
+			options, err := flags.ToOptions(ctx, cfg.Ignored)
+			if err != nil {
+				return err
+			}
+			return options.Run()
+		},
 	}
 	return cmd
 }

@@ -119,29 +119,29 @@ func authCanICommand(client cli.Destination[rootConfig, clientConfig]) cli.Comma
 				Description("If true, check the specified action in all namespaces.")
 			allNamespacesFlag.Long("all-namespaces").ImplicitValue(true)
 			allNamespacesFlag.Short('A').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
+			cb.Values.ResolveWith(allNamespacesFlag, cli.Value.KeepLast())
 
 			list := cb.Values.Bool(&cb.Config.List)
-			cb.Flags.ValueFor(list).
-				Description("If true, prints all allowed actions.").
-				Long("list").
-				ImplicitValue(true)
+			listFlag := cb.Flags.ValueFor(list)
+			listFlag.Description("If true, prints all allowed actions.").Long("list").ImplicitValue(true)
+			cb.Values.ResolveWith(listFlag, cli.Value.KeepLast())
 
 			noHeaders := cb.Values.Bool(&cb.Config.NoHeaders)
-			cb.Flags.ValueFor(noHeaders).
-				Description("If true, prints allowed actions without headers").
-				Long("no-headers").
-				ImplicitValue(true)
+			noHeadersFlag := cb.Flags.ValueFor(noHeaders)
+			noHeadersFlag.Description("If true, prints allowed actions without headers").Long("no-headers").ImplicitValue(true)
+			cb.Values.ResolveWith(noHeadersFlag, cli.Value.KeepLast())
 
 			quiet := cb.Values.Bool(&cb.Config.Quiet)
 			quietFlag := cb.Flags.ValueFor(quiet).
 				Description("If true, suppress output and just return the exit code.")
 			quietFlag.Long("quiet").ImplicitValue(true)
 			quietFlag.Short('q').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
+			cb.Values.ResolveWith(quietFlag, cli.Value.KeepLast())
 
 			subresource := cb.Values.String(&cb.Config.Subresource)
-			cb.Flags.ValueFor(subresource).
-				Description("SubResource such as pod/log or deployment/scale").
-				Long("subresource")
+			subresourceFlag := cb.Flags.ValueFor(subresource)
+			subresourceFlag.Description("SubResource such as pod/log or deployment/scale").Long("subresource")
+			cb.Values.ResolveWith(subresourceFlag, cli.Value.KeepLast())
 
 			listing := cb.When.Equal(list, true)
 			cb.Rule.When(listing).Forbid(verb)

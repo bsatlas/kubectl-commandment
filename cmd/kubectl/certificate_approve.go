@@ -1,10 +1,20 @@
 package main
 
 import (
+	"context"
+
 	"github.com/abstractionsinc/commandment/cli"
+	"k8s.io/api/certificates/v1"
 )
 
 func certificateApproveCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[certificateConditionConfig] {
+	change := certificateConditionChange{
+		forbidden: v1.CertificateDenied,
+		condition: v1.CertificateApproved,
+		operation: "approved",
+		reason:    "KubectlApprove",
+		message:   "This CSR was approved by kubectl certificate approve.",
+	}
 	cmd := cli.Command[certificateConditionConfig]{
 		Name: "approve",
 		Description: cli.Description{
@@ -20,7 +30,9 @@ func certificateApproveCommand(client cli.Destination[rootConfig, clientConfig])
 		Declare: func(cb *cli.CommandBuilder[certificateConditionConfig]) {
 			declareCertificateConditionCommand(cb, client, "Update the CSR even if it is already approved.")
 		},
-		Run: runCertificateApprove,
+		Run: func(ctx context.Context, cfg *certificateConditionConfig) error {
+			return modifyCertificateCondition(ctx, cfg, change)
+		},
 	}
 	return cmd
 }

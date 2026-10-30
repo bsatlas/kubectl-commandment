@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"io"
 
 	"github.com/abstractionsinc/commandment/cli"
@@ -13,12 +14,10 @@ type certificateConditionConfig struct {
 
 	Names                    []string
 	AllowMissingTemplateKeys bool
-	Filename                 []string
+	Filename                 filenameOptions
 	Force                    bool
-	Kustomize                string
 	Output                   string
 	OutputState              cli.OptionalValue[cli.ValueState]
-	Recursive                bool
 	ShowManagedFields        bool
 	Template                 string
 }
@@ -51,23 +50,25 @@ func declareCertificateConditionCommand(cb *cli.CommandBuilder[certificateCondit
 		form.Sequence(names, "NAME", cli.Count.OneOrMore())
 	})
 
-	filename := cb.Values.Sequence(&cb.Config.Filename, cli.Value.String())
-	filenameFlag := cb.Flags.Sequence(filename).
-		DelimitedBy(",").
-		Description("Filename, directory, or URL to files identifying the resource to update")
+	filenames := cb.Values.Sequence(&cb.Config.Filename.Groups, filenameListLanguage)
+	filenameFlag := cb.Flags.Sequence(filenames).
+		Description("Filename, directory, or URL to files identifying the resource to update").
+		CompleteWith(cli.CompletionNativePaths)
 	filenameFlag.Long("filename")
-	filenameFlag.Short('f')
+	filenameFlag.Short('f').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
-	cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Force)).
-		Description(forceDescription).
-		Long("force").
-		ImplicitValue(true)
+	force := cb.Values.Bool(&cb.Config.Force)
+	forceFlag := cb.Flags.ValueFor(force)
+	forceFlag.Description(forceDescription).Long("force").ImplicitValue(true)
+	cb.Values.ResolveWith(forceFlag, cli.Value.KeepLast())
 
-	kustomize := cb.Values.String(&cb.Config.Kustomize)
+	kustomize := cb.Values.String(&cb.Config.Filename.Kustomize)
 	kustomizeFlag := cb.Flags.ValueFor(kustomize).
-		Description("Process the kustomization directory. This flag can't be used together with -f or -R.")
+		Description("Process the kustomization directory. This flag can't be used together with -f or -R.").
+		CompleteWith(cli.CompletionNativeDirectories)
 	kustomizeFlag.Long("kustomize")
-	kustomizeFlag.Short('k')
+	kustomizeFlag.Short('k').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
+	cb.Values.ResolveWith(kustomizeFlag, cli.Value.KeepLast())
 
 	declarePrintFlags(
 		cb,
@@ -78,12 +79,18 @@ func declareCertificateConditionCommand(cb *cli.CommandBuilder[certificateCondit
 		&cb.Config.ShowManagedFields,
 	)
 
-	recursive := cb.Values.Bool(&cb.Config.Recursive)
+	recursive := cb.Values.Bool(&cb.Config.Filename.Recursive)
 	recursiveFlag := cb.Flags.ValueFor(recursive).
 		Description("Process the directory used in -f, --filename recursively.")
 	recursiveFlag.Long("recursive").ImplicitValue(true)
 	recursiveFlag.Short('R').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
+	cb.Values.ResolveWith(recursiveFlag, cli.Value.KeepLast())
 
-	cb.Rule.ExactlyOne(names, filename).And(kustomize)
-	cb.Rule.When(cb.When.Equal(recursive, true)).Forbid(kustomize)
+	cb.Rule.Check("certificate-source", func(_ context.Context, cfg *certificateConditionConfig, _ cli.Dependencies) (bool, error) {
+		return len(cfg.Names) != 0 || len(cfg.Filename.Filenames()) != 0 || cfg.Filename.Kustomize != "", nil
+	}).Subject(names).Subject(filenames).Subject(kustomize)
+	cb.Rule.Check("certificate-filename-kustomize", func(_ context.Context, cfg *certificateConditionConfig, _ cli.Dependencies) (bool, error) {
+		return len(cfg.Filename.Filenames()) == 0 || cfg.Filename.Kustomize == "", nil
+	}).Subject(filenames).Subject(kustomize)
+	cb.Rule.When(cb.When.Equal(recursive, true)).Equal(kustomize, "")
 }

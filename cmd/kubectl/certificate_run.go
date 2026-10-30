@@ -36,9 +36,9 @@ func modifyCertificateCondition(ctx context.Context, cfg *certificateConditionCo
 		return err
 	}
 	filenameOptions := resource.FilenameOptions{
-		Filenames: cfg.Filename,
-		Kustomize: cfg.Kustomize,
-		Recursive: cfg.Recursive,
+		Filenames: cfg.Filename.Filenames(),
+		Kustomize: cfg.Filename.Kustomize,
+		Recursive: cfg.Filename.Recursive,
 	}
 
 	var found int

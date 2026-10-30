@@ -4,9 +4,7 @@ import (
 	"context"
 
 	"k8s.io/cli-runtime/pkg/genericiooptions"
-
 	"k8s.io/cli-runtime/pkg/resource"
-
 	"k8s.io/kubectl/pkg/cmd/auth"
 	"k8s.io/kubectl/pkg/cmd/util"
 	"k8s.io/kubectl/pkg/scheme"
@@ -21,9 +19,9 @@ func runAuthReconcile(ctx context.Context, cfg *authReconcileConfig) error {
 	}
 	options := auth.NewReconcileOptions(streams)
 	options.FilenameOptions = &resource.FilenameOptions{
-		Filenames: cfg.Filename,
-		Kustomize: cfg.Kustomize,
-		Recursive: cfg.Recursive,
+		Filenames: cfg.Filename.Filenames(),
+		Kustomize: cfg.Filename.Kustomize,
+		Recursive: cfg.Filename.Recursive,
 	}
 	options.DryRun = cfg.DryRun == util.DryRunClient
 	options.RemoveExtraPermissions = cfg.RemoveExtraPermissions

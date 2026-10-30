@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"io"
 
 	"github.com/abstractionsinc/commandment/cli"
@@ -15,11 +16,9 @@ type authReconcileConfig struct {
 
 	AllowMissingTemplateKeys bool
 	DryRun                   util.DryRunStrategy
-	Filename                 []string
-	Kustomize                string
+	Filename                 filenameOptions
 	Output                   string
 	OutputState              cli.OptionalValue[cli.ValueState]
-	Recursive                bool
 	RemoveExtraPermissions   bool
 	RemoveExtraSubjects      bool
 	ShowManagedFields        bool
@@ -47,24 +46,28 @@ func authReconcileCommand(client cli.Destination[rootConfig, clientConfig]) cli.
 
 			dryRun := cb.Values.Value(&cb.Config.DryRun, dryRunValueLanguage)
 			cb.Values.Default(dryRun, util.DryRunNone)
-			cb.Flags.ValueFor(dryRun).
+			dryRunFlag := cb.Flags.ValueFor(dryRun)
+			dryRunFlag.
 				Description("Must be \"none\" or \"client\". If client strategy, only print the object that would be sent, without sending it.").
 				Long("dry-run").
 				ImplicitValue(util.DryRunClient)
+			cb.Values.ResolveWith(dryRunFlag, cli.Value.KeepLast())
 			cb.Rule.NotEqual(dryRun, util.DryRunServer)
 
-			filename := cb.Values.Sequence(&cb.Config.Filename, cli.Value.String())
-			filenameFlag := cb.Flags.Sequence(filename).
-				DelimitedBy(",").
-				Description("Filename, directory, or URL to files identifying the resource to reconcile.")
+			filenames := cb.Values.Sequence(&cb.Config.Filename.Groups, filenameListLanguage)
+			filenameFlag := cb.Flags.Sequence(filenames).
+				Description("Filename, directory, or URL to files identifying the resource to reconcile.").
+				CompleteWith(cli.CompletionNativePaths)
 			filenameFlag.Long("filename")
-			filenameFlag.Short('f')
+			filenameFlag.Short('f').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
-			kustomize := cb.Values.String(&cb.Config.Kustomize)
+			kustomize := cb.Values.String(&cb.Config.Filename.Kustomize)
 			kustomizeFlag := cb.Flags.ValueFor(kustomize).
-				Description("Process the kustomization directory. This flag can't be used together with -f or -R.")
+				Description("Process the kustomization directory. This flag can't be used together with -f or -R.").
+				CompleteWith(cli.CompletionNativeDirectories)
 			kustomizeFlag.Long("kustomize")
-			kustomizeFlag.Short('k')
+			kustomizeFlag.Short('k').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
+			cb.Values.ResolveWith(kustomizeFlag, cli.Value.KeepLast())
 
 			declarePrintFlags(
 				cb,
@@ -75,24 +78,35 @@ func authReconcileCommand(client cli.Destination[rootConfig, clientConfig]) cli.
 				&cb.Config.ShowManagedFields,
 			)
 
-			recursive := cb.Values.Bool(&cb.Config.Recursive)
+			recursive := cb.Values.Bool(&cb.Config.Filename.Recursive)
 			recursiveFlag := cb.Flags.ValueFor(recursive).
 				Description("Process the directory used in -f, --filename recursively. Useful when you want to manage related manifests organized within the same directory.")
 			recursiveFlag.Long("recursive").ImplicitValue(true)
 			recursiveFlag.Short('R').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
+			cb.Values.ResolveWith(recursiveFlag, cli.Value.KeepLast())
 
-			cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.RemoveExtraPermissions)).
+			removeExtraPermissions := cb.Values.Bool(&cb.Config.RemoveExtraPermissions)
+			removeExtraPermissionsFlag := cb.Flags.ValueFor(removeExtraPermissions)
+			removeExtraPermissionsFlag.
 				Description("If true, removes extra permissions added to roles").
 				Long("remove-extra-permissions").
 				ImplicitValue(true)
+			cb.Values.ResolveWith(removeExtraPermissionsFlag, cli.Value.KeepLast())
 
-			cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.RemoveExtraSubjects)).
+			removeExtraSubjects := cb.Values.Bool(&cb.Config.RemoveExtraSubjects)
+			removeExtraSubjectsFlag := cb.Flags.ValueFor(removeExtraSubjects)
+			removeExtraSubjectsFlag.
 				Description("If true, removes extra subjects added to rolebindings").
 				Long("remove-extra-subjects").
 				ImplicitValue(true)
+			cb.Values.ResolveWith(removeExtraSubjectsFlag, cli.Value.KeepLast())
 
-			cb.Rule.ExactlyOne(filename, kustomize)
-			cb.Rule.When(cb.When.Equal(recursive, true)).Forbid(kustomize)
+			cb.Rule.Check("auth-reconcile-source", func(_ context.Context, cfg *authReconcileConfig, _ cli.Dependencies) (bool, error) {
+				hasFilenames := len(cfg.Filename.Filenames()) != 0
+				hasKustomize := cfg.Filename.Kustomize != ""
+				return hasFilenames != hasKustomize, nil
+			}).Subject(filenames).Subject(kustomize)
+			cb.Rule.When(cb.When.Equal(recursive, true)).Equal(kustomize, "")
 		},
 		Run: runAuthReconcile,
 	}
