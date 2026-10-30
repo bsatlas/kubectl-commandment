@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"regexp"
@@ -28,7 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/errors"
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/cli-runtime/pkg/printers"
 	"k8s.io/cli-runtime/pkg/resource"
@@ -39,7 +40,13 @@ import (
 	"k8s.io/kubectl/pkg/scheme"
 )
 
-var invalidEnvName = regexp.MustCompile("[^a-zA-Z0-9_]")
+var (
+	errSetEnvModifyRemoveSame = errors.New("can not both modify and remove the same environment variable in the same command")
+	errSetEnvUnsupportedFrom  = errors.New("unsupported resource specified in --from")
+	errSetEnvReferenceFailure = errors.New("failed to retrieve valueFrom references")
+	errSetEnvNoEnvironment    = errors.New("at least one environment variable must be provided")
+	invalidEnvName            = regexp.MustCompile("[^a-zA-Z0-9_]")
+)
 
 func resolveEnvChanges(in io.Reader, groups ...[]envChange) ([]v1.EnvVar, []string, bool, error) {
 	var environment []v1.EnvVar
@@ -67,7 +74,7 @@ func resolveEnvChanges(in io.Reader, groups ...[]envChange) ([]v1.EnvVar, []stri
 		}
 	}
 	if envSetAndRemoved(environment, remove) {
-		return nil, nil, usedStdin, fmt.Errorf("can not both modify and remove the same environment variable in the same command")
+		return nil, nil, usedStdin, errSetEnvModifyRemoveSame
 	}
 	return environment, remove, usedStdin, nil
 }
@@ -85,11 +92,11 @@ func envSetAndRemoved(environment []v1.EnvVar, remove []string) bool {
 	return false
 }
 
-func runSetEnv(_ context.Context, cfg *setEnvConfig) error {
+func runSetEnv(ctx context.Context, cfg *setEnvConfig) error {
 	resources, positionalEnvironment := splitEnvArguments(cfg.Arguments)
 	strategy := cfg.DryRun
 
-	factory := cfg.Client.factory()
+	factory := cfg.Client.factoryForInvocation(ctx)
 	namespace, enforceNamespace, err := factory.ToRawKubeConfigLoader().Namespace()
 	if err != nil {
 		return err
@@ -105,9 +112,9 @@ func runSetEnv(_ context.Context, cfg *setEnvConfig) error {
 	}
 
 	filename := resource.FilenameOptions{
-		Filenames: slices.Clone(cfg.Filename),
-		Kustomize: cfg.Kustomize,
-		Recursive: cfg.Recursive,
+		Filenames: cfg.Filename.Filenames(),
+		Kustomize: cfg.Filename.Kustomize,
+		Recursive: cfg.Filename.Recursive,
 	}
 	warningPrinter := printers.NewWarningPrinter(cfg.Streams.ErrOut, printers.WarningPrinterOptions{
 		Color: printers.AllowsColorOutput(cfg.Streams.ErrOut),
@@ -117,9 +124,9 @@ func runSetEnv(_ context.Context, cfg *setEnvConfig) error {
 			WithScheme(scheme.Scheme, scheme.Scheme.PrioritizedVersionsAllGroups()...).
 			LocalParam(cfg.Local).
 			ContinueOnError().
-			NamespaceParam(namespace).DefaultNamespace().
-			FilenameParam(enforceNamespace, &filename).
-			Flatten()
+			NamespaceParam(namespace).DefaultNamespace()
+		addFilenameSources(builder, enforceNamespace, filename, cfg.Streams.In)
+		builder.Flatten()
 		if !cfg.Local {
 			builder.LabelSelectorParam(cfg.Selector).ResourceTypeOrNameArgs(cfg.All, cfg.From).Latest()
 		}
@@ -165,7 +172,7 @@ func runSetEnv(_ context.Context, cfg *setEnvConfig) error {
 					}
 				}
 			default:
-				return fmt.Errorf("unsupported resource specified in --from")
+				return errSetEnvUnsupportedFrom
 			}
 		}
 	}
@@ -179,9 +186,9 @@ func runSetEnv(_ context.Context, cfg *setEnvConfig) error {
 		WithScheme(scheme.Scheme, scheme.Scheme.PrioritizedVersionsAllGroups()...).
 		LocalParam(cfg.Local).
 		ContinueOnError().
-		NamespaceParam(namespace).DefaultNamespace().
-		FilenameParam(enforceNamespace, &filename).
-		Flatten()
+		NamespaceParam(namespace).DefaultNamespace()
+	addFilenameSources(builder, enforceNamespace, filename, cfg.Streams.In)
+	builder.Flatten()
 	if !cfg.Local {
 		builder.LabelSelectorParam(cfg.Selector).ResourceTypeOrNameArgs(cfg.All, resources...).Latest()
 	}
@@ -194,7 +201,7 @@ func runSetEnv(_ context.Context, cfg *setEnvConfig) error {
 	}
 
 	printFlags := genericclioptions.NewPrintFlags("env updated").WithTypeSetter(scheme.Scheme)
-	configurePrintFlags(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
+	configurePrintFlagsWithOutputState(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields, cfg.OutputState)
 	printObj, err := printObject(printFlags, strategy, cfg.Streams.Out)
 	if err != nil {
 		return err
@@ -225,22 +232,32 @@ func runSetEnv(_ context.Context, cfg *setEnvConfig) error {
 				}
 				resolveErrors := map[string][]string{}
 				store := env.NewResourceStore()
-				fmt.Fprintf(cfg.Streams.Out, "# %s %s, container %s\n", kind, name, container.Name)
+				if _, err := fmt.Fprintf(cfg.Streams.Out, "# %s %s, container %s\n", kind, name, container.Name); err != nil {
+					return err
+				}
 				for _, variable := range container.Env {
 					if variable.ValueFrom == nil {
-						fmt.Fprintf(cfg.Streams.Out, "%s=%s\n", variable.Name, variable.Value)
+						if _, err := fmt.Fprintf(cfg.Streams.Out, "%s=%s\n", variable.Name, variable.Value); err != nil {
+							return err
+						}
 						continue
 					}
 					if !cfg.Resolve {
-						fmt.Fprintf(cfg.Streams.Out, "# %s from %s\n", variable.Name, env.GetEnvVarRefString(variable.ValueFrom))
+						if _, err := fmt.Fprintf(cfg.Streams.Out, "# %s from %s\n", variable.Name, env.GetEnvVarRefString(variable.ValueFrom)); err != nil {
+							return err
+						}
 						continue
 					}
 					value, err := env.GetEnvVarRefValue(clientset, namespace, store, variable.ValueFrom, object, container)
 					if err == nil {
-						fmt.Fprintf(cfg.Streams.Out, "%s=%s\n", variable.Name, value)
+						if _, err := fmt.Fprintf(cfg.Streams.Out, "%s=%s\n", variable.Name, value); err != nil {
+							return err
+						}
 						continue
 					}
-					fmt.Fprintf(cfg.Streams.Out, "# %s from %s\n", variable.Name, env.GetEnvVarRefString(variable.ValueFrom))
+					if _, err := fmt.Fprintf(cfg.Streams.Out, "# %s from %s\n", variable.Name, env.GetEnvVarRefString(variable.ValueFrom)); err != nil {
+						return err
+					}
 					resolveErrors[err.Error()] = append(resolveErrors[err.Error()], variable.Name)
 					resolutionFailed = true
 				}
@@ -251,11 +268,13 @@ func runSetEnv(_ context.Context, cfg *setEnvConfig) error {
 				}
 				slices.Sort(messages)
 				for _, message := range messages {
-					fmt.Fprintln(cfg.Streams.ErrOut, message)
+					if _, err := fmt.Fprintln(cfg.Streams.ErrOut, message); err != nil {
+						return err
+					}
 				}
 			}
 			if resolutionFailed {
-				return fmt.Errorf("failed to retrieve valueFrom references")
+				return errSetEnvReferenceFailure
 			}
 			return nil
 		})
@@ -272,7 +291,7 @@ func runSetEnv(_ context.Context, cfg *setEnvConfig) error {
 	for _, patch := range patches {
 		info := patch.Info
 		if patch.Err != nil {
-			allErrs = append(allErrs, fmt.Errorf("error: %s %v\n", info.ObjectName(), patch.Err))
+			allErrs = append(allErrs, fmt.Errorf("error: %s %w\n", info.ObjectName(), patch.Err))
 			continue
 		}
 		if len(patch.Patch) == 0 || string(patch.Patch) == "{}" {
@@ -289,17 +308,17 @@ func runSetEnv(_ context.Context, cfg *setEnvConfig) error {
 			WithFieldManager(cfg.FieldManager).
 			Patch(info.Namespace, info.Name, types.StrategicMergePatchType, patch.Patch, nil)
 		if err != nil {
-			allErrs = append(allErrs, fmt.Errorf("failed to patch env update to pod template: %v", err))
+			allErrs = append(allErrs, fmt.Errorf("failed to patch env update to pod template: %w", err))
 			continue
 		}
 		if len(environment) == 0 && len(positionalEnvironment) == 0 {
-			return fmt.Errorf("at least one environment variable must be provided")
+			return errSetEnvNoEnvironment
 		}
 		if err := printObj(actual); err != nil {
 			allErrs = append(allErrs, err)
 		}
 	}
-	return errors.NewAggregate(allErrs)
+	return utilerrors.NewAggregate(allErrs)
 }
 
 func envKeySelected(key string, keys []string) bool {

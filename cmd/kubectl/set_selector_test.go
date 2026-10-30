@@ -56,6 +56,14 @@ func TestSetSelectorDeclaresSourceAndSelectorGrammar(t *testing.T) {
 			args:     []string{"set", "selector", "-f", "service.yaml", "app=frontend", "--local", "--dry-run=server"},
 			rejected: true,
 		},
+		{
+			name: "assigned short filename",
+			args: []string{"set", "selector", "-f=object.yaml", "app=web"},
+		},
+		{
+			name: "repeated resource version keeps last",
+			args: []string{"set", "selector", "service/frontend", "app=web", "--resource-version=1", "--resource-version=2"},
+		},
 	}
 
 	for _, test := range tests {

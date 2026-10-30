@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -17,24 +18,26 @@ import (
 	"k8s.io/kubectl/pkg/scheme"
 )
 
-func runSetSelector(_ context.Context, cfg *setSelectorConfig) error {
+var errSetSelectorUnsupportedService = errors.New("setting a selector is only supported for Services")
+
+func runSetSelector(ctx context.Context, cfg *setSelectorConfig) error {
 	strategy := cfg.DryRun
-	factory := cfg.Client.factory()
+	factory := cfg.Client.factoryForInvocation(ctx)
 	namespace, enforceNamespace, err := factory.ToRawKubeConfigLoader().Namespace()
 	if err != nil {
 		return err
 	}
 	filename := resource.FilenameOptions{
-		Filenames: slices.Clone(cfg.Filename),
+		Filenames: slices.Concat(cfg.Filename...),
 		Recursive: cfg.Recursive,
 	}
 	builder := factory.NewBuilder().
 		WithScheme(scheme.Scheme, scheme.Scheme.PrioritizedVersionsAllGroups()...).
 		LocalParam(cfg.Local).
 		ContinueOnError().
-		NamespaceParam(namespace).DefaultNamespace().
-		FilenameParam(enforceNamespace, &filename).
-		Flatten()
+		NamespaceParam(namespace).DefaultNamespace()
+	addFilenameSources(builder, enforceNamespace, filename, cfg.Streams.In)
+	builder.Flatten()
 	if !cfg.Local {
 		builder.ResourceTypeOrNameArgs(cfg.All, cfg.Resources...).Latest()
 	}
@@ -44,7 +47,7 @@ func runSetSelector(_ context.Context, cfg *setSelectorConfig) error {
 	}
 
 	printFlags := genericclioptions.NewPrintFlags("selector updated").WithTypeSetter(scheme.Scheme)
-	configurePrintFlags(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
+	configurePrintFlagsWithOutputState(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields, cfg.OutputState)
 	printObj, err := printObject(printFlags, strategy, cfg.Streams.Out)
 	if err != nil {
 		return err
@@ -85,7 +88,7 @@ func runSetSelector(_ context.Context, cfg *setSelectorConfig) error {
 			}
 			service, ok := object.(*v1.Service)
 			if !ok {
-				return nil, fmt.Errorf("setting a selector is only supported for Services")
+				return nil, errSetSelectorUnsupportedService
 			}
 			if len(cfg.Selector.MatchExpressions) > 0 {
 				return nil, fmt.Errorf("match expression %v not supported on this object", cfg.Selector.MatchExpressions)

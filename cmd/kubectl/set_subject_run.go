@@ -3,13 +3,14 @@ package main
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
 	"k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/errors"
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/cli-runtime/pkg/resource"
@@ -19,26 +20,31 @@ import (
 	"k8s.io/kubectl/pkg/scheme"
 )
 
-func runSetSubject(_ context.Context, cfg *setSubjectConfig) error {
+var (
+	errSetSubjectServiceAccountNamespace = errors.New("serviceaccount must be <namespace>:<name>, namespace must be specified")
+	errSetSubjectUnsupportedKind         = errors.New("setting subjects is only supported for RoleBinding/ClusterRoleBinding")
+)
+
+func runSetSubject(ctx context.Context, cfg *setSubjectConfig) error {
 	strategy := cfg.DryRun
 
-	factory := cfg.Client.factory()
+	factory := cfg.Client.factoryForInvocation(ctx)
 	namespace, enforceNamespace, err := factory.ToRawKubeConfigLoader().Namespace()
 	if err != nil && !(cfg.Local && clientcmd.IsEmptyConfig(err)) {
 		return err
 	}
 	filename := resource.FilenameOptions{
-		Filenames: slices.Clone(cfg.Filename),
-		Kustomize: cfg.Kustomize,
-		Recursive: cfg.Recursive,
+		Filenames: cfg.Filename.Filenames(),
+		Kustomize: cfg.Filename.Kustomize,
+		Recursive: cfg.Filename.Recursive,
 	}
 	builder := factory.NewBuilder().
 		WithScheme(scheme.Scheme, scheme.Scheme.PrioritizedVersionsAllGroups()...).
 		LocalParam(cfg.Local).
 		ContinueOnError().
-		NamespaceParam(namespace).DefaultNamespace().
-		FilenameParam(enforceNamespace, &filename).
-		Flatten()
+		NamespaceParam(namespace).DefaultNamespace()
+	addFilenameSources(builder, enforceNamespace, filename, cfg.Streams.In)
+	builder.Flatten()
 	if !cfg.Local {
 		builder.LabelSelectorParam(cfg.Selector).ResourceTypeOrNameArgs(cfg.All, cfg.Resources...).Latest()
 	}
@@ -50,13 +56,13 @@ func runSetSubject(_ context.Context, cfg *setSubjectConfig) error {
 	for _, serviceAccount := range cfg.ServiceAccounts {
 		for _, info := range infos {
 			if _, ok := info.Object.(*v1.ClusterRoleBinding); ok && serviceAccount.namespace == "" {
-				return fmt.Errorf("serviceaccount must be <namespace>:<name>, namespace must be specified")
+				return errSetSubjectServiceAccountNamespace
 			}
 		}
 	}
 
 	printFlags := genericclioptions.NewPrintFlags("subjects updated").WithTypeSetter(scheme.Scheme)
-	configurePrintFlags(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
+	configurePrintFlagsWithOutputState(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields, cfg.OutputState)
 	printObj, err := printObject(printFlags, strategy, cfg.Streams.Out)
 	if err != nil {
 		return err
@@ -109,7 +115,7 @@ func runSetSubject(_ context.Context, cfg *setSubjectConfig) error {
 	for _, patch := range patches {
 		info := patch.Info
 		if patch.Err != nil {
-			allErrs = append(allErrs, fmt.Errorf("error: %s %v\n", info.ObjectName(), patch.Err))
+			allErrs = append(allErrs, fmt.Errorf("error: %s %w\n", info.ObjectName(), patch.Err))
 			continue
 		}
 		if len(patch.Patch) == 0 || string(patch.Patch) == "{}" {
@@ -126,14 +132,14 @@ func runSetSubject(_ context.Context, cfg *setSubjectConfig) error {
 			WithFieldManager(cfg.FieldManager).
 			Patch(info.Namespace, info.Name, types.StrategicMergePatchType, patch.Patch, nil)
 		if err != nil {
-			allErrs = append(allErrs, fmt.Errorf("failed to patch subjects to rolebinding: %v", err))
+			allErrs = append(allErrs, fmt.Errorf("failed to patch subjects to rolebinding: %w", err))
 			continue
 		}
 		if err := printObj(actual); err != nil {
 			allErrs = append(allErrs, err)
 		}
 	}
-	return errors.NewAggregate(allErrs)
+	return utilerrors.NewAggregate(allErrs)
 }
 
 func addBindingSubjects(object runtime.Object, subjects []v1.Subject) (bool, error) {
@@ -147,7 +153,7 @@ func addBindingSubjects(object runtime.Object, subjects []v1.Subject) (bool, err
 		binding.Subjects = updated
 		return changed, nil
 	default:
-		return false, fmt.Errorf("setting subjects is only supported for RoleBinding/ClusterRoleBinding")
+		return false, errSetSubjectUnsupportedKind
 	}
 }
 

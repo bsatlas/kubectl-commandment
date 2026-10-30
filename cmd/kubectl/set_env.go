@@ -22,16 +22,15 @@ type setEnvConfig struct {
 	DryRun                   util.DryRunStrategy
 	Env                      []envChange
 	FieldManager             string
-	Filename                 []string
+	Filename                 filenameOptions
 	From                     string
 	Keys                     []string
-	Kustomize                string
 	List                     bool
 	Local                    bool
 	Output                   string
+	OutputState              cli.OptionalValue[cli.ValueState]
 	Overwrite                bool
 	Prefix                   string
-	Recursive                bool
 	Resolve                  bool
 	Selector                 string
 	ShowManagedFields        bool
@@ -285,22 +284,26 @@ func setEnvCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command
 
 			all := cb.Values.Bool(&cb.Config.All)
 			allFlag := cb.Flags.ValueFor(all)
+			cb.Values.ResolveWith(allFlag, cli.Value.KeepLast())
 			allFlag.Description("If true, select all resources in the namespace of the specified resource types")
 			allFlag.Long("all").ImplicitValue(true)
 
 			allowMissingTemplateKeysFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.AllowMissingTemplateKeys))
+			cb.Values.ResolveWith(allowMissingTemplateKeysFlag, cli.Value.KeepLast())
 			allowMissingTemplateKeysFlag.Description("If true, ignore any errors in templates when a field or map key is missing in the template. Only applies to golang and jsonpath output formats.")
 			cb.Values.Default(allowMissingTemplateKeysFlag, true)
 			allowMissingTemplateKeysFlag.Long("allow-missing-template-keys").ImplicitValue(true)
 
 			containersFlag := cb.Flags.String(&cb.Config.Containers)
+			cb.Values.ResolveWith(containersFlag, cli.Value.KeepLast())
 			containersFlag.Description("The names of containers in the selected pod templates to change - may use wildcards")
 			cb.Values.Default(containersFlag, "*")
 			containersFlag.Long("containers")
-			containersFlag.Short('c')
+			containersFlag.Short('c').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
 			dryRun := cb.Values.Value(&cb.Config.DryRun, dryRunValueLanguage)
 			dryRunFlag := cb.Flags.ValueFor(dryRun)
+			cb.Values.ResolveWith(dryRunFlag, cli.Value.KeepLast())
 			dryRunFlag.Description("Must be \"none\", \"server\", or \"client\". If client strategy, only print the object that would be sent, without sending it. If server strategy, submit server-side request without persisting the resource.")
 			cb.Values.Default(dryRunFlag, util.DryRunNone)
 			dryRunFlagLong := dryRunFlag.Long("dry-run")
@@ -310,22 +313,24 @@ func setEnvCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command
 			envFlag := cb.Flags.Sequence(envValue)
 			envFlag.Description("Specify a key-value pair for an environment variable to set into each container.")
 			envFlag.Long("env")
-			envFlag.Short('e')
+			envFlag.Short('e').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
 			fieldManagerFlag := cb.Flags.String(&cb.Config.FieldManager)
+			cb.Values.ResolveWith(fieldManagerFlag, cli.Value.KeepLast())
 			fieldManagerFlag.Description("Name of the manager used to track field ownership.")
 			cb.Values.Default(fieldManagerFlag, "kubectl-set")
 			fieldManagerFlag.Long("field-manager")
 
-			filenameValue := cb.Values.Sequence(&cb.Config.Filename, cli.Value.String())
+			filenameValue := cb.Values.Sequence(&cb.Config.Filename.Groups, filenameListLanguage)
 			filenameFlag := cb.Flags.Sequence(filenameValue)
-			filenameFlag.DelimitedBy(",")
 			filenameFlag.Description("Filename, directory, or URL to files the resource to update the env")
+			filenameFlag.CompleteWith(cli.CompletionNativePaths)
 			filenameFlag.Long("filename")
-			filenameFlag.Short('f')
+			filenameFlag.Short('f').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
 			from := cb.Values.String(&cb.Config.From)
 			fromFlag := cb.Flags.ValueFor(from)
+			cb.Values.ResolveWith(fromFlag, cli.Value.KeepLast())
 			fromFlag.Description("The name of a resource from which to inject environment variables")
 			fromFlag.Long("from")
 
@@ -335,76 +340,92 @@ func setEnvCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command
 			keysFlag.Description("Comma-separated list of keys to import from specified resource")
 			keysFlag.Long("keys")
 
-			kustomize := cb.Values.String(&cb.Config.Kustomize)
+			kustomize := cb.Values.String(&cb.Config.Filename.Kustomize)
 			kustomizeFlag := cb.Flags.ValueFor(kustomize)
+			cb.Values.ResolveWith(kustomizeFlag, cli.Value.KeepLast())
 			kustomizeFlag.Description("Process the kustomization directory. This flag can't be used together with -f or -R.")
+			kustomizeFlag.CompleteWith(cli.CompletionNativeDirectories)
 			kustomizeFlag.Long("kustomize")
-			kustomizeFlag.Short('k')
+			kustomizeFlag.Short('k').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
 			list := cb.Values.Bool(&cb.Config.List)
 			listFlag := cb.Flags.ValueFor(list)
+			cb.Values.ResolveWith(listFlag, cli.Value.KeepLast())
 			listFlag.Description("If true, display the environment and any changes in the standard format. this flag will removed when we have kubectl view env.")
 			listFlag.Long("list").ImplicitValue(true)
 
 			local := cb.Values.Bool(&cb.Config.Local)
 			localFlag := cb.Flags.ValueFor(local)
+			cb.Values.ResolveWith(localFlag, cli.Value.KeepLast())
 			localFlag.Description("If true, set env will NOT contact api-server but run locally.")
 			localFlag.Long("local").ImplicitValue(true)
 
-			output := cb.Values.String(&cb.Config.Output)
+			output := cb.Values.Value(&cb.Config.Output, printOutputLanguage)
 			outputFlag := cb.Flags.ValueFor(output)
+			cb.Values.ResolveWith(outputFlag, cli.Value.KeepLast())
 			outputFlag.Description("Output format. One of: (json, yaml, kyaml, name, go-template, go-template-file, template, templatefile, jsonpath, jsonpath-as-json, jsonpath-file).")
+			outputFlag.CompleteBy(completePrintOutputFormat[setEnvConfig])
 			outputFlag.Long("output")
-			outputFlag.Short('o')
+			outputFlag.Short('o').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
+			cb.Access.ValueState(output, &cb.Config.OutputState)
 
 			overwriteFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Overwrite))
+			cb.Values.ResolveWith(overwriteFlag, cli.Value.KeepLast())
 			overwriteFlag.Description("If true, allow environment to be overwritten, otherwise reject updates that overwrite existing environment.")
 			cb.Values.Default(overwriteFlag, true)
 			overwriteFlag.Long("overwrite").ImplicitValue(true)
 
 			prefixFlag := cb.Flags.String(&cb.Config.Prefix)
+			cb.Values.ResolveWith(prefixFlag, cli.Value.KeepLast())
 			prefixFlag.Description("Prefix to append to variable names")
 			prefixFlag.Long("prefix")
 
-			recursive := cb.Values.Bool(&cb.Config.Recursive)
+			recursive := cb.Values.Bool(&cb.Config.Filename.Recursive)
 			recursiveFlag := cb.Flags.ValueFor(recursive)
+			cb.Values.ResolveWith(recursiveFlag, cli.Value.KeepLast())
 			recursiveFlag.Description("Process the directory used in -f, --filename recursively. Useful when you want to manage related manifests organized within the same directory.")
 			recursiveFlag.Long("recursive").ImplicitValue(true)
 			recursiveFlag.Short('R').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
 
 			resolveFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Resolve))
+			cb.Values.ResolveWith(resolveFlag, cli.Value.KeepLast())
 			resolveFlag.Description("If true, show secret or configmap references when listing variables")
 			resolveFlag.Long("resolve").ImplicitValue(true)
 
 			selector := cb.Values.String(&cb.Config.Selector)
 			selectorFlag := cb.Flags.ValueFor(selector)
+			cb.Values.ResolveWith(selectorFlag, cli.Value.KeepLast())
 			selectorFlag.Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
 			selectorFlag.Long("selector")
-			selectorFlag.Short('l')
+			selectorFlag.Short('l').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
 			showManagedFieldsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowManagedFields))
+			cb.Values.ResolveWith(showManagedFieldsFlag, cli.Value.KeepLast())
 			showManagedFieldsFlag.Description("If true, keep the managedFields when printing objects in JSON or YAML format.")
 			showManagedFieldsFlag.Long("show-managed-fields").ImplicitValue(true)
 
-			templateFlag := cb.Flags.String(&cb.Config.Template)
+			template := cb.Values.String(&cb.Config.Template)
+			templateFlag := cb.Flags.ValueFor(template)
+			cb.Values.ResolveWith(templateFlag, cli.Value.KeepLast())
 			templateFlag.Description("Template string or path to template file to use when -o=go-template, -o=go-template-file. The template format is golang templates [http://golang.org/pkg/text/template/#pkg-overview].")
+			templateFlag.CompleteWith(cli.CompletionNativeFiles)
 			templateFlag.Long("template")
 
+			declarePrintOutputTemplateRule(cb, outputFlag, templateFlag)
+
 			cb.Rule.When(cb.When.Equal(all, true)).Equal(selector, "")
-			cb.Rule.AtMostOne(filenameValue, kustomize)
+			cb.Rule.Check("kubectl-set-env-filename-kustomize", func(_ context.Context, cfg *setEnvConfig, _ cli.Dependencies) (bool, error) {
+				return len(cfg.Filename.Filenames()) == 0 || cfg.Filename.Kustomize == "", nil
+			}).
+				DependsOn(filenameValue.OptionalDependency()).
+				DependsOn(kustomize.OptionalDependency())
 			cb.Rule.When(cb.When.Equal(recursive, true)).Forbid(kustomize)
 			cb.Rule.Check("kubectl-set-env-argument-order", func(_ context.Context, cfg *setEnvConfig, _ cli.Dependencies) (bool, error) {
 				return envArgumentOrderValid(cfg.Arguments), nil
 			}).DependsOn(arguments.OptionalDependency())
-			cb.Rule.Check("kubectl-set-env-local-resources", func(_ context.Context, cfg *setEnvConfig, _ cli.Dependencies) (bool, error) {
-				resources, _ := splitEnvArguments(cfg.Arguments)
-				return !cfg.Local || len(resources) == 0, nil
-			}).
-				DependsOn(local.OptionalDependency()).
-				DependsOn(arguments.OptionalDependency())
 			cb.Rule.Check("kubectl-set-env-source", func(_ context.Context, cfg *setEnvConfig, _ cli.Dependencies) (bool, error) {
 				resources, _ := splitEnvArguments(cfg.Arguments)
-				return len(resources) != 0 || len(cfg.Filename) != 0, nil
+				return len(resources) != 0 || len(cfg.Filename.Filenames()) != 0, nil
 			}).
 				DependsOn(arguments.OptionalDependency()).
 				DependsOn(filenameValue.OptionalDependency())

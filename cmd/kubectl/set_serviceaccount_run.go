@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"slices"
 
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -19,25 +18,25 @@ import (
 	"k8s.io/kubectl/pkg/scheme"
 )
 
-func runSetServiceAccount(_ context.Context, cfg *setServiceAccountConfig) error {
+func runSetServiceAccount(ctx context.Context, cfg *setServiceAccountConfig) error {
 	strategy := cfg.DryRun
-	factory := cfg.Client.factory()
+	factory := cfg.Client.factoryForInvocation(ctx)
 	namespace, enforceNamespace, err := factory.ToRawKubeConfigLoader().Namespace()
 	if err != nil && !(cfg.Local && clientcmd.IsEmptyConfig(err)) {
 		return err
 	}
 	filename := resource.FilenameOptions{
-		Filenames: slices.Clone(cfg.Filename),
-		Kustomize: cfg.Kustomize,
-		Recursive: cfg.Recursive,
+		Filenames: cfg.Filename.Filenames(),
+		Kustomize: cfg.Filename.Kustomize,
+		Recursive: cfg.Filename.Recursive,
 	}
 	builder := factory.NewBuilder().
 		WithScheme(scheme.Scheme, scheme.Scheme.PrioritizedVersionsAllGroups()...).
 		LocalParam(cfg.Local).
 		ContinueOnError().
-		NamespaceParam(namespace).DefaultNamespace().
-		FilenameParam(enforceNamespace, &filename).
-		Flatten()
+		NamespaceParam(namespace).DefaultNamespace()
+	addFilenameSources(builder, enforceNamespace, filename, cfg.Streams.In)
+	builder.Flatten()
 	if !cfg.Local {
 		builder.ResourceTypeOrNameArgs(cfg.All, cfg.Resources...).Latest()
 	}
@@ -47,7 +46,7 @@ func runSetServiceAccount(_ context.Context, cfg *setServiceAccountConfig) error
 	}
 
 	printFlags := genericclioptions.NewPrintFlags("serviceaccount updated").WithTypeSetter(scheme.Scheme)
-	configurePrintFlags(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
+	configurePrintFlagsWithOutputState(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields, cfg.OutputState)
 	printObj, err := printObject(printFlags, strategy, cfg.Streams.Out)
 	if err != nil {
 		return err
@@ -82,7 +81,7 @@ func runSetServiceAccount(_ context.Context, cfg *setServiceAccountConfig) error
 	for _, patch := range patches {
 		info := patch.Info
 		if patch.Err != nil {
-			allErrs = append(allErrs, fmt.Errorf("error: %s %v", info.ObjectName(), patch.Err))
+			allErrs = append(allErrs, fmt.Errorf("error: %s %w\n", info.ObjectName(), patch.Err))
 			continue
 		}
 		if cfg.Local || strategy == util.DryRunClient {
@@ -96,7 +95,7 @@ func runSetServiceAccount(_ context.Context, cfg *setServiceAccountConfig) error
 			WithFieldManager(cfg.FieldManager).
 			Patch(info.Namespace, info.Name, types.StrategicMergePatchType, patch.Patch, nil)
 		if err != nil {
-			allErrs = append(allErrs, fmt.Errorf("failed to patch ServiceAccountName %v", err))
+			allErrs = append(allErrs, fmt.Errorf("failed to patch ServiceAccountName %w", err))
 			continue
 		}
 		if err := printObj(actual); err != nil {

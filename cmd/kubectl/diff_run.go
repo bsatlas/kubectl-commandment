@@ -19,7 +19,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"slices"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -50,13 +49,15 @@ type diffPruner struct {
 	resources     []prune.Resource
 }
 
+const diffMaxRetries = 4
+
 func runDiff(ctx context.Context, cfg *diffConfig) error {
 	filename := resource.FilenameOptions{
-		Filenames: slices.Clone(cfg.Filename),
-		Kustomize: cfg.Kustomize,
-		Recursive: cfg.Recursive,
+		Filenames: cfg.Filename.Filenames(),
+		Kustomize: cfg.Filename.Kustomize,
+		Recursive: cfg.Filename.Recursive,
 	}
-	factory := cfg.Client.factory()
+	factory := cfg.Client.factoryForInvocation(ctx)
 	var openAPIV3Root openapi3.Root
 	if !cfg.ServerSide {
 		openAPIV3Client, err := factory.OpenAPIV3Client()
@@ -99,7 +100,7 @@ func runDiff(ctx context.Context, cfg *diffConfig) error {
 		}
 	}
 
-	program := diff.NewDiffOptions(cfg.Streams).Diff
+	program := &diff.DiffProgram{Exec: exec.New(), IOStreams: cfg.Streams}
 	differ, err := diff.NewDiffer("LIVE", "MERGED")
 	if err != nil {
 		return err
@@ -107,11 +108,12 @@ func runDiff(ctx context.Context, cfg *diffConfig) error {
 	defer differ.TearDown()
 	printer := diff.Printer{}
 
-	result := factory.NewBuilder().
+	builder := factory.NewBuilder().
 		Unstructured().
 		VisitorConcurrency(cfg.Concurrency).
-		NamespaceParam(namespace).DefaultNamespace().
-		FilenameParam(enforceNamespace, &filename).
+		NamespaceParam(namespace).DefaultNamespace()
+	addFilenameSources(builder, enforceNamespace, filename, cfg.Streams.In)
+	result := builder.
 		LabelSelectorParam(cfg.Selector).
 		Flatten().
 		Do()
@@ -124,14 +126,14 @@ func runDiff(ctx context.Context, cfg *diffConfig) error {
 			return visitErr
 		}
 		local := info.Object.DeepCopyObject()
-		for attempt := 1; attempt <= 4; attempt++ {
+		for attempt := 1; attempt <= diffMaxRetries; attempt++ {
 			if err := info.Get(); err != nil {
 				if !errors.IsNotFound(err) {
 					return err
 				}
 				info.Object = nil
 			}
-			force := attempt == 4
+			force := attempt == diffMaxRetries
 			if force {
 				klog.Warningf("Object (%v: %v) keeps changing, diffing without lock", info.Object.GetObjectKind().GroupVersionKind(), info.Name)
 			}
@@ -203,13 +205,13 @@ func (pruner *diffPruner) pruneAll(ctx context.Context, tracker *diffTracker, na
 	var objects []runtime.Object
 	namespaced, cluster, err := prune.GetRESTMappings(pruner.mapper, pruner.resources, namespaceSpecified)
 	if err != nil {
-		return objects, fmt.Errorf("error retrieving RESTMappings to prune: %v", err)
+		return objects, fmt.Errorf("error retrieving RESTMappings to prune: %w", err)
 	}
 	for namespace := range tracker.visitedNamespaces {
 		for _, mapping := range namespaced {
 			pruned, err := pruner.prune(ctx, tracker, namespace, mapping)
 			if err != nil {
-				return pruned, fmt.Errorf("error pruning namespaced object %v: %v", mapping.GroupVersionKind, err)
+				return pruned, fmt.Errorf("error pruning namespaced object %v: %w", mapping.GroupVersionKind, err)
 			}
 			objects = append(objects, pruned...)
 		}
@@ -217,7 +219,7 @@ func (pruner *diffPruner) pruneAll(ctx context.Context, tracker *diffTracker, na
 	for _, mapping := range cluster {
 		pruned, err := pruner.prune(ctx, tracker, v1.NamespaceNone, mapping)
 		if err != nil {
-			return pruned, fmt.Errorf("error pruning nonNamespaced object %v: %v", mapping.GroupVersionKind, err)
+			return pruned, fmt.Errorf("error pruning nonNamespaced object %v: %w", mapping.GroupVersionKind, err)
 		}
 		objects = append(objects, pruned...)
 	}

@@ -12,12 +12,10 @@ type diffConfig struct {
 	Streams           genericiooptions.IOStreams
 	Concurrency       int
 	FieldManager      string
-	Filename          []string
+	Filename          filenameOptions
 	ForceConflicts    bool
-	Kustomize         string
 	Prune             bool
 	PruneAllowlist    []string
-	Recursive         bool
 	Selector          string
 	ServerSide        bool
 	ShowManagedFields bool
@@ -48,13 +46,14 @@ func diffCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[d
 			cb.Access.Stderr(&cb.Config.Streams.ErrOut)
 
 			fieldManager := cb.Values.String(&cb.Config.FieldManager)
-			filename := cb.Values.Sequence(&cb.Config.Filename, cli.Value.String())
+			filename := cb.Values.Sequence(&cb.Config.Filename.Groups, filenameListLanguage)
 			forceConflicts := cb.Values.Bool(&cb.Config.ForceConflicts)
-			kustomize := cb.Values.String(&cb.Config.Kustomize)
-			recursive := cb.Values.Bool(&cb.Config.Recursive)
+			kustomize := cb.Values.String(&cb.Config.Filename.Kustomize)
+			recursive := cb.Values.Bool(&cb.Config.Filename.Recursive)
 			serverSide := cb.Values.Bool(&cb.Config.ServerSide)
 
 			concurrencyFlag := cb.Flags.Int(&cb.Config.Concurrency)
+			cb.Values.ResolveWith(concurrencyFlag, cli.Value.KeepLast())
 			concurrencyFlag.Description("Number of objects to process in parallel when diffing against the live version. Larger number = faster, but more memory, I/O and CPU over that shorter period of time.")
 			cb.Values.Default(concurrencyFlag, 1)
 			concurrencyFlag.Long("concurrency")
@@ -71,25 +70,30 @@ func diffCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[d
 			)
 			cb.Values.Default(fieldManager, "kubectl-client-side-apply")
 			fieldManagerFlag := cb.Flags.ValueFor(fieldManager)
+			cb.Values.ResolveWith(fieldManagerFlag, cli.Value.KeepLast())
 			fieldManagerFlag.Description("Name of the manager used to track field ownership.")
 			fieldManagerFlag.Long("field-manager")
 
 			filenameFlag := cb.Flags.Sequence(filename)
-			filenameFlag.DelimitedBy(",")
 			filenameFlag.Description("Filename, directory, or URL to files contains the configuration to diff")
+			filenameFlag.CompleteWith(cli.CompletionNativePaths)
 			filenameFlag.Long("filename")
-			filenameFlag.Short('f')
+			filenameFlag.Short('f').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
 			forceConflictsFlag := cb.Flags.ValueFor(forceConflicts)
+			cb.Values.ResolveWith(forceConflictsFlag, cli.Value.KeepLast())
 			forceConflictsFlag.Description("If true, server-side apply will force the changes against conflicts.")
 			forceConflictsFlag.Long("force-conflicts").ImplicitValue(true)
 
 			kustomizeFlag := cb.Flags.ValueFor(kustomize)
+			cb.Values.ResolveWith(kustomizeFlag, cli.Value.KeepLast())
 			kustomizeFlag.Description("Process the kustomization directory. This flag can't be used together with -f or -R.")
+			kustomizeFlag.CompleteWith(cli.CompletionNativeDirectories)
 			kustomizeFlag.Long("kustomize")
-			kustomizeFlag.Short('k')
+			kustomizeFlag.Short('k').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
 			pruneFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Prune))
+			cb.Values.ResolveWith(pruneFlag, cli.Value.KeepLast())
 			pruneFlag.Description("Include resources that would be deleted by pruning. Can be used with -l and default shows all resources would be pruned")
 			pruneFlag.Long("prune").ImplicitValue(true)
 
@@ -99,30 +103,43 @@ func diffCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[d
 			pruneAllowlistFlag.Long("prune-allowlist")
 
 			recursiveFlag := cb.Flags.ValueFor(recursive)
+			cb.Values.ResolveWith(recursiveFlag, cli.Value.KeepLast())
 			recursiveFlag.Description("Process the directory used in -f, --filename recursively. Useful when you want to manage related manifests organized within the same directory.")
 			recursiveFlag.Long("recursive").ImplicitValue(true)
 			recursiveFlag.Short('R').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
 
 			selectorFlag := cb.Flags.String(&cb.Config.Selector)
+			cb.Values.ResolveWith(selectorFlag, cli.Value.KeepLast())
 			selectorFlag.Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
 			selectorFlag.Long("selector")
-			selectorFlag.Short('l')
+			selectorFlag.Short('l').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
 			serverSideFlag := cb.Flags.ValueFor(serverSide)
+			cb.Values.ResolveWith(serverSideFlag, cli.Value.KeepLast())
 			serverSideFlag.Description("If true, apply runs in the server instead of the client.")
 			serverSideFlag.Long("server-side").ImplicitValue(true)
 
 			showManagedFieldsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowManagedFields))
+			cb.Values.ResolveWith(showManagedFieldsFlag, cli.Value.KeepLast())
 			showManagedFieldsFlag.Description("If true, include managed fields in the diff.")
 			showManagedFieldsFlag.Long("show-managed-fields").ImplicitValue(true)
 
 			showSecretsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowSecrets))
+			cb.Values.ResolveWith(showSecretsFlag, cli.Value.KeepLast())
 			showSecretsFlag.Description("If true, do not mask secret values in the diff.")
 			showSecretsFlag.Long("show-secrets").ImplicitValue(true)
 
-			cb.Rule.AtMostOne(filename, kustomize)
+			cb.Rule.Check("kubectl-diff-filename-kustomize", func(_ context.Context, cfg *diffConfig, _ cli.Dependencies) (bool, error) {
+				return len(cfg.Filename.Filenames()) == 0 || cfg.Filename.Kustomize == "", nil
+			}).
+				DependsOn(filename.OptionalDependency()).
+				DependsOn(kustomize.OptionalDependency())
 			cb.Rule.When(cb.When.Equal(recursive, true)).Forbid(kustomize)
-			cb.Rule.AtLeastOne(filename, kustomize)
+			cb.Rule.Check("kubectl-diff-source", func(_ context.Context, cfg *diffConfig, _ cli.Dependencies) (bool, error) {
+				return len(cfg.Filename.Filenames()) != 0 || cfg.Filename.Kustomize != "", nil
+			}).
+				DependsOn(filename.OptionalDependency()).
+				DependsOn(kustomize.OptionalDependency())
 			cb.Rule.When(cb.When.Equal(forceConflicts, true)).Require(serverSide)
 			cb.Rule.When(cb.When.Equal(forceConflicts, true)).Equal(serverSide, true)
 		},

@@ -55,6 +55,14 @@ func TestSetServiceAccountDeclaresSourceWithoutInventingLocalResourcePolicy(t *t
 			args:     []string{"set", "serviceaccount", "-f", "object.yaml", "builder", "--local", "--dry-run=server"},
 			rejected: true,
 		},
+		{
+			name: "assigned short filename",
+			args: []string{"set", "serviceaccount", "-f=object.yaml", "builder"},
+		},
+		{
+			name: "repeated field manager keeps last",
+			args: []string{"set", "serviceaccount", "deployment/nginx", "builder", "--field-manager=first", "--field-manager=second"},
+		},
 	}
 
 	for _, test := range tests {

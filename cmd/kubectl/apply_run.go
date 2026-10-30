@@ -2,13 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"slices"
 
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/cli-runtime/pkg/printers"
+	"k8s.io/cli-runtime/pkg/resource"
 	"k8s.io/client-go/openapi3"
 	"k8s.io/klog/v2"
 	"k8s.io/kubectl/pkg/cmd/apply"
@@ -18,32 +19,19 @@ import (
 	"k8s.io/kubectl/pkg/util/prune"
 )
 
-func runApply(_ context.Context, cfg *applyConfig) error {
-	factory := cfg.Client.factory()
+var errApplySetRESTClientUnavailable = errors.New("could not build RESTClient for ApplySet")
+
+func runApply(ctx context.Context, cfg *applyConfig) error {
+	factory := cfg.Client.factoryForInvocation(ctx)
 	strategy := cfg.DryRun
 
 	dynamicClient, err := factory.DynamicClient()
 	if err != nil {
 		return err
 	}
-	deleteFlags := delete.NewDeleteFlags("The files, directories or URLs that contain the configurations to apply.")
-	*deleteFlags.FileNameFlags.Filenames = slices.Clone(cfg.Filename)
-	*deleteFlags.FileNameFlags.Kustomize = cfg.Kustomize
-	*deleteFlags.FileNameFlags.Recursive = cfg.Recursive
-	*deleteFlags.CascadingStrategy = cfg.Cascade
-	*deleteFlags.Force = cfg.Force
-	*deleteFlags.GracePeriod = cfg.GracePeriod
-	*deleteFlags.Timeout = cfg.Timeout
-	*deleteFlags.Wait = cfg.Wait
-	deleteOptions, err := deleteFlags.ToOptions(dynamicClient, cfg.Streams)
-	if err != nil {
-		return err
-	}
-	if err := deleteOptions.FilenameOptions.RequireFilenameOrKustomize(); err != nil {
-		return err
-	}
+
 	printFlags := genericclioptions.NewPrintFlags("created").WithTypeSetter(scheme.Scheme)
-	configurePrintFlags(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
+	configurePrintFlagsWithOutputState(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields, cfg.OutputState)
 	toPrinter := func(operation string) (printers.ResourcePrinter, error) {
 		printFlags.NamePrintFlags.Operation = operation
 		util.PrintFlagsWithDryRunStrategy(printFlags, strategy)
@@ -62,6 +50,28 @@ func runApply(_ context.Context, cfg *applyConfig) error {
 		return err
 	}
 
+	deleteFlags := delete.NewDeleteFlags("The files, directories or URLs that contain the configurations to apply.")
+	*deleteFlags.FileNameFlags.Filenames = cfg.Filename.Filenames()
+	*deleteFlags.FileNameFlags.Kustomize = cfg.Filename.Kustomize
+	*deleteFlags.FileNameFlags.Recursive = cfg.Filename.Recursive
+	*deleteFlags.CascadingStrategy = cfg.Cascade
+	*deleteFlags.Force = cfg.Force
+	*deleteFlags.GracePeriod = cfg.GracePeriod
+	*deleteFlags.Timeout = cfg.Timeout
+	*deleteFlags.Wait = cfg.Wait
+	deleteOptions, err := deleteFlags.ToOptions(dynamicClient, cfg.Streams)
+	if err != nil {
+		return err
+	}
+
+	openAPIV3Client, openAPIV3Err := factory.OpenAPIV3Client()
+	var openAPIV3Root openapi3.Root
+	if openAPIV3Err == nil {
+		openAPIV3Root = openapi3.NewRoot(openAPIV3Client)
+	} else {
+		klog.V(4).Infof("warning: OpenAPI V3 Patch is enabled but is unable to be loaded. Will fall back to OpenAPI V2")
+	}
+
 	validate, err := validationDirective(cfg.Validate)
 	if err != nil {
 		return err
@@ -77,14 +87,6 @@ func runApply(_ context.Context, cfg *applyConfig) error {
 	namespace, enforceNamespace, err := factory.ToRawKubeConfigLoader().Namespace()
 	if err != nil {
 		return err
-	}
-
-	openAPIV3Client, openAPIV3Err := factory.OpenAPIV3Client()
-	var openAPIV3Root openapi3.Root
-	if openAPIV3Err == nil {
-		openAPIV3Root = openapi3.NewRoot(openAPIV3Client)
-	} else {
-		klog.V(4).Infof("warning: OpenAPI V3 Patch is enabled but is unable to be loaded. Will fall back to OpenAPI V2")
 	}
 
 	var applySet *apply.ApplySet
@@ -105,9 +107,12 @@ func runApply(_ context.Context, cfg *applyConfig) error {
 			return fmt.Errorf("failed to initialize RESTClient for ApplySet: %w", err)
 		}
 		if restClient == nil {
-			return fmt.Errorf("could not build RESTClient for ApplySet")
+			return errApplySetRESTClientUnavailable
 		}
 		applySet = apply.NewApplySet(parent, tooling, mapper, restClient)
+		if err := applySet.Validate(ctx, dynamicClient); err != nil {
+			return err
+		}
 	}
 
 	pruneResources := []prune.Resource(nil)
@@ -149,5 +154,9 @@ func runApply(_ context.Context, cfg *applyConfig) error {
 		ApplySet:            applySet,
 	}
 	options.PostProcessorFn = options.PrintAndPrunePostProcessor()
+
+	addFilenameSources(options.Builder, options.EnforceNamespace, options.DeleteOptions.FilenameOptions, cfg.Streams.In)
+	options.DeleteOptions.FilenameOptions = resource.FilenameOptions{}
+
 	return options.Run()
 }

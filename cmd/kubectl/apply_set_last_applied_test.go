@@ -21,6 +21,12 @@ func TestApplySetLastAppliedRequiresFilename(t *testing.T) {
 		{
 			Args: []string{"apply", "set-last-applied", "-f", "one.yaml", "-f", "two.yaml"},
 		},
+		{
+			Args: []string{"apply", "set-last-applied", "-f=object.yaml"},
+		},
+		{
+			Args: []string{"apply", "set-last-applied", "-f", "object.yaml", "--create-annotation=false", "--create-annotation=true"},
+		},
 	}
 	for _, request := range readyRequests {
 		clitest.Inspect(t.Context(), app, request).Require(t, clitest.InspectionReady())

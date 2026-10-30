@@ -17,12 +17,11 @@ type setSubjectConfig struct {
 	AllowMissingTemplateKeys bool
 	DryRun                   util.DryRunStrategy
 	FieldManager             string
-	Filename                 []string
+	Filename                 filenameOptions
 	Group                    []string
-	Kustomize                string
 	Local                    bool
 	Output                   string
-	Recursive                bool
+	OutputState              cli.OptionalValue[cli.ValueState]
 	Selector                 string
 	ServiceAccounts          []subjectServiceAccount
 	ShowManagedFields        bool
@@ -84,6 +83,15 @@ func setSubjectCommand(client cli.Destination[rootConfig, clientConfig]) cli.Com
 			cb.Access.Stdin(&cb.Config.Streams.In)
 			cb.Access.Stdout(&cb.Config.Streams.Out)
 			cb.Access.Stderr(&cb.Config.Streams.ErrOut)
+
+			declarePrintFlags(
+				cb,
+				&cb.Config.Output,
+				&cb.Config.OutputState,
+				&cb.Config.Template,
+				&cb.Config.AllowMissingTemplateKeys,
+				&cb.Config.ShowManagedFields,
+			)
 			resources := cb.Values.Sequence(&cb.Config.Resources, cli.Value.String())
 			cb.Arguments.Form(func(form *cli.ArgumentFormBuilder[setSubjectConfig]) {
 				form.Sequence(resources, "RESOURCE", cli.Count.ZeroOrMore())
@@ -91,78 +99,68 @@ func setSubjectCommand(client cli.Destination[rootConfig, clientConfig]) cli.Com
 
 			all := cb.Values.Bool(&cb.Config.All)
 			allFlag := cb.Flags.ValueFor(all)
+			cb.Values.ResolveWith(allFlag, cli.Value.KeepLast())
 			allFlag.Description("Select all resources, in the namespace of the specified resource types")
 			allFlag.Long("all").ImplicitValue(true)
 
-			allowMissingTemplateKeysFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.AllowMissingTemplateKeys))
-			allowMissingTemplateKeysFlag.Description("If true, ignore any errors in templates when a field or map key is missing in the template. Only applies to golang and jsonpath output formats.")
-			cb.Values.Default(allowMissingTemplateKeysFlag, true)
-			allowMissingTemplateKeysFlag.Long("allow-missing-template-keys").ImplicitValue(true)
-
 			dryRun := cb.Values.Value(&cb.Config.DryRun, dryRunValueLanguage)
 			dryRunFlag := cb.Flags.ValueFor(dryRun)
+			cb.Values.ResolveWith(dryRunFlag, cli.Value.KeepLast())
 			dryRunFlag.Description("Must be \"none\", \"server\", or \"client\". If client strategy, only print the object that would be sent, without sending it. If server strategy, submit server-side request without persisting the resource.")
 			cb.Values.Default(dryRunFlag, util.DryRunNone)
 			dryRunFlagLong := dryRunFlag.Long("dry-run")
 			dryRunFlagLong.ImplicitValue(util.DryRunClient)
 
 			fieldManagerFlag := cb.Flags.String(&cb.Config.FieldManager)
+			cb.Values.ResolveWith(fieldManagerFlag, cli.Value.KeepLast())
 			fieldManagerFlag.Description("Name of the manager used to track field ownership.")
 			cb.Values.Default(fieldManagerFlag, "kubectl-set")
 			fieldManagerFlag.Long("field-manager")
 
-			filenameValue := cb.Values.Sequence(&cb.Config.Filename, cli.Value.String())
+			filenameValue := cb.Values.Sequence(&cb.Config.Filename.Groups, filenameListLanguage)
 			filenameFlag := cb.Flags.Sequence(filenameValue)
-			filenameFlag.DelimitedBy(",")
 			filenameFlag.Description("Filename, directory, or URL to files the resource to update the subjects")
+			filenameFlag.CompleteWith(cli.CompletionNativePaths)
 			filenameFlag.Long("filename")
-			filenameFlag.Short('f')
+			filenameFlag.Short('f').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
 			groupValue := cb.Values.Sequence(&cb.Config.Group, cli.Value.String())
 			groupFlag := cb.Flags.Sequence(groupValue)
 			groupFlag.Description("Groups to bind to the role")
 			groupFlag.Long("group")
 
-			kustomize := cb.Values.String(&cb.Config.Kustomize)
+			kustomize := cb.Values.String(&cb.Config.Filename.Kustomize)
 			kustomizeFlag := cb.Flags.ValueFor(kustomize)
+			cb.Values.ResolveWith(kustomizeFlag, cli.Value.KeepLast())
 			kustomizeFlag.Description("Process the kustomization directory. This flag can't be used together with -f or -R.")
+			kustomizeFlag.CompleteWith(cli.CompletionNativeDirectories)
 			kustomizeFlag.Long("kustomize")
-			kustomizeFlag.Short('k')
+			kustomizeFlag.Short('k').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
 			local := cb.Values.Bool(&cb.Config.Local)
 			localFlag := cb.Flags.ValueFor(local)
+			cb.Values.ResolveWith(localFlag, cli.Value.KeepLast())
 			localFlag.Description("If true, set subject will NOT contact api-server but run locally.")
 			localFlag.Long("local").ImplicitValue(true)
 
-			outputFlag := cb.Flags.String(&cb.Config.Output)
-			outputFlag.Description("Output format. One of: (json, yaml, kyaml, name, go-template, go-template-file, template, templatefile, jsonpath, jsonpath-as-json, jsonpath-file).")
-			outputFlag.Long("output")
-			outputFlag.Short('o')
-
-			recursive := cb.Values.Bool(&cb.Config.Recursive)
+			recursive := cb.Values.Bool(&cb.Config.Filename.Recursive)
 			recursiveFlag := cb.Flags.ValueFor(recursive)
+			cb.Values.ResolveWith(recursiveFlag, cli.Value.KeepLast())
 			recursiveFlag.Description("Process the directory used in -f, --filename recursively. Useful when you want to manage related manifests organized within the same directory.")
 			recursiveFlag.Long("recursive").ImplicitValue(true)
 			recursiveFlag.Short('R').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
 
 			selector := cb.Values.String(&cb.Config.Selector)
 			selectorFlag := cb.Flags.ValueFor(selector)
+			cb.Values.ResolveWith(selectorFlag, cli.Value.KeepLast())
 			selectorFlag.Description("Selector (label query) to filter on, supports '=', '==', '!=', 'in', 'notin'.(e.g. -l key1=value1,key2=value2,key3 in (value3)). Matching objects must satisfy all of the specified label constraints.")
 			selectorFlag.Long("selector")
-			selectorFlag.Short('l')
+			selectorFlag.Short('l').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
 			serviceAccountValue := cb.Values.Sequence(&cb.Config.ServiceAccounts, subjectServiceAccountLanguage)
 			serviceAccountFlag := cb.Flags.Sequence(serviceAccountValue)
 			serviceAccountFlag.Description("Service accounts to bind to the role")
 			serviceAccountFlag.Long("serviceaccount")
-
-			showManagedFieldsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowManagedFields))
-			showManagedFieldsFlag.Description("If true, keep the managedFields when printing objects in JSON or YAML format.")
-			showManagedFieldsFlag.Long("show-managed-fields").ImplicitValue(true)
-
-			templateFlag := cb.Flags.String(&cb.Config.Template)
-			templateFlag.Description("Template string or path to template file to use when -o=go-template, -o=go-template-file. The template format is golang templates [http://golang.org/pkg/text/template/#pkg-overview].")
-			templateFlag.Long("template")
 
 			userValue := cb.Values.Sequence(&cb.Config.User, cli.Value.String())
 			userFlag := cb.Flags.Sequence(userValue)
@@ -170,10 +168,19 @@ func setSubjectCommand(client cli.Destination[rootConfig, clientConfig]) cli.Com
 			userFlag.Long("user")
 
 			cb.Rule.When(cb.When.Equal(all, true)).Equal(selector, "")
-			cb.Rule.AtMostOne(filenameValue, kustomize)
+			cb.Rule.Check("kubectl-set-subject-filename-kustomize", func(_ context.Context, cfg *setSubjectConfig, _ cli.Dependencies) (bool, error) {
+				return len(cfg.Filename.Filenames()) == 0 || cfg.Filename.Kustomize == "", nil
+			}).
+				DependsOn(filenameValue.OptionalDependency()).
+				DependsOn(kustomize.OptionalDependency())
 			cb.Rule.When(cb.When.Equal(recursive, true)).Forbid(kustomize)
 			cb.Rule.When(cb.When.Equal(local, true)).Forbid(resources)
-			cb.Rule.AtLeastOne(resources, filenameValue).And(kustomize)
+			cb.Rule.Check("kubectl-set-subject-source", func(_ context.Context, cfg *setSubjectConfig, _ cli.Dependencies) (bool, error) {
+				return len(cfg.Resources) != 0 || len(cfg.Filename.Filenames()) != 0 || cfg.Filename.Kustomize != "", nil
+			}).
+				DependsOn(resources.OptionalDependency()).
+				DependsOn(filenameValue.OptionalDependency()).
+				DependsOn(kustomize.OptionalDependency())
 			cb.Rule.AtLeastOne(userValue, groupValue).And(serviceAccountValue)
 			cb.Rule.Check("kubectl-set-subject-local-dry-run", func(_ context.Context, cfg *setSubjectConfig, _ cli.Dependencies) (bool, error) {
 				return !cfg.Local || cfg.DryRun != util.DryRunServer, nil

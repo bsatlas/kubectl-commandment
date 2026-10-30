@@ -51,6 +51,14 @@ func TestDiffDeclaresSourceAndServerSideRelationships(t *testing.T) {
 			name: "force conflicts with server side",
 			args: []string{"diff", "-f", "object.yaml", "--server-side", "--force-conflicts"},
 		},
+		{
+			name: "assigned short filename",
+			args: []string{"diff", "-f=object.yaml"},
+		},
+		{
+			name: "repeated field manager keeps last",
+			args: []string{"diff", "-f", "object.yaml", "--field-manager=first", "--field-manager=second"},
+		},
 	}
 
 	for _, test := range tests {

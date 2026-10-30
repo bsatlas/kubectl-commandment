@@ -88,6 +88,14 @@ func TestSetSubjectDeclaresSourceSubjectAndServiceAccountSemantics(t *testing.T)
 			args:     []string{"set", "subject", "rolebinding", "--user=alice", "--all", "--selector=team=dev"},
 			rejected: true,
 		},
+		{
+			name: "assigned short filename",
+			args: []string{"set", "subject", "-f=object.yaml", "--user=alice"},
+		},
+		{
+			name: "repeated field manager keeps last",
+			args: []string{"set", "subject", "rolebinding/admin", "--user=alice", "--field-manager=first", "--field-manager=second"},
+		},
 	}
 
 	for _, test := range tests {

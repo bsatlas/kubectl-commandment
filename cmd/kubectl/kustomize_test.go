@@ -58,6 +58,10 @@ func TestKustomizeDeclaresArgumentAndTypedFlagDomains(t *testing.T) {
 			args:     []string{"kustomize", "--reorder=random"},
 			rejected: true,
 		},
+		{
+			name: "repeated load restrictor keeps last",
+			args: []string{"kustomize", "overlay", "--load-restrictor=LoadRestrictionsRootOnly", "--load-restrictor=LoadRestrictionsNone"},
+		},
 	}
 
 	for _, test := range tests {
@@ -76,7 +80,7 @@ func TestKustomizeDeclaresArgumentAndTypedFlagDomains(t *testing.T) {
 	}
 }
 
-func TestKustomizeDeclaresManagedbyLabelEnvironment(t *testing.T) {
+func TestKustomizeDeclaresManagedByLabelEnvironment(t *testing.T) {
 	t.Parallel()
 
 	app, err := application(pluginCatalog{})
@@ -92,13 +96,34 @@ func TestKustomizeDeclaresManagedbyLabelEnvironment(t *testing.T) {
 			},
 		},
 	}
-	managedbyLabel := clitest.Command("kustomize").Environment("KUSTOMIZE_ENABLE_MANAGEDBY_LABEL").Value()
+	managedByLabel := clitest.Command("kustomize").Environment("KUSTOMIZE_ENABLE_MANAGEDBY_LABEL").Value()
 	clitest.Inspect(t.Context(), app, request).Require(t,
 		clitest.InspectionReady(),
-		managedbyLabel.Resolved(),
-		managedbyLabel.Text("true"),
+		managedByLabel.Resolved(),
+		managedByLabel.Text("true"),
 	)
 }
+
+func TestKustomizeCompletesLoadRestrictorDomain(t *testing.T) {
+	t.Parallel()
+
+	app, err := application(pluginCatalog{})
+	if err != nil {
+		t.Fatalf("Application() error = %v", err)
+	}
+	request := cli.CompletionRequest{
+		Args: []string{"kustomize", "--load-restrictor", "LoadRestrictions"},
+		Cursor: cli.CompletionCursor{
+			Argument: 2,
+			Byte:     len("LoadRestrictions"),
+		},
+	}
+	clitest.Complete(t.Context(), app, request).Require(t,
+		clitest.CompletionItem("LoadRestrictionsNone").Present(),
+		clitest.CompletionItem("LoadRestrictionsRootOnly").Present(),
+	)
+}
+
 func TestPreexistingDeprecatedFlagsPreserveLifecycleAndVisibility(t *testing.T) {
 	t.Parallel()
 

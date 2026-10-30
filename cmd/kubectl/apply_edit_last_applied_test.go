@@ -40,19 +40,19 @@ func TestEditLastAppliedDeclaresResourceSourceGrammar(t *testing.T) {
 			ready: false,
 		},
 		{
-			name:  "filename and explicit empty kustomize",
-			args:  []string{"apply", "edit-last-applied", "-f", "a.yaml", "--kustomize="},
-			ready: true,
-		},
-		{
-			name:  "explicit empty kustomize is not a source",
-			args:  []string{"apply", "edit-last-applied", "--kustomize="},
-			ready: false,
-		},
-		{
 			name:  "recursive kustomize",
 			args:  []string{"apply", "edit-last-applied", "-k", "dir", "--recursive"},
 			ready: false,
+		},
+		{
+			name:  "assigned short filename",
+			args:  []string{"apply", "edit-last-applied", "-f=object.yaml"},
+			ready: true,
+		},
+		{
+			name:  "repeated field manager keeps last",
+			args:  []string{"apply", "edit-last-applied", "deployment/nginx", "--field-manager=first", "--field-manager=second"},
+			ready: true,
 		},
 	}
 

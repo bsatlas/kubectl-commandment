@@ -22,22 +22,28 @@ type lastAppliedPatch struct {
 	patchType types.PatchType
 }
 
-func runApplySetLastApplied(_ context.Context, cfg *applySetLastAppliedConfig) error {
+func runApplySetLastApplied(ctx context.Context, cfg *applySetLastAppliedConfig) error {
 	strategy := cfg.DryRun
-	factory := cfg.Client.factory()
+	factory := cfg.Client.factoryForInvocation(ctx)
 	namespace, enforceNamespace, err := factory.ToRawKubeConfigLoader().Namespace()
 	if err != nil {
 		return err
 	}
-	filenameOptions := resource.FilenameOptions{
-		Filenames: slices.Clone(cfg.Filename),
+	printFlags := genericclioptions.NewPrintFlags("configured").WithTypeSetter(scheme.Scheme)
+	configurePrintFlagsWithOutputState(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields, cfg.OutputState)
+	printObject, err := printObject(printFlags, strategy, cfg.Streams.Out)
+	if err != nil {
+		return err
 	}
-	result := factory.NewBuilder().
+
+	filenameOptions := resource.FilenameOptions{
+		Filenames: slices.Concat(cfg.Filename...),
+	}
+	builder := factory.NewBuilder().
 		Unstructured().
-		NamespaceParam(namespace).DefaultNamespace().
-		FilenameParam(enforceNamespace, &filenameOptions).
-		Flatten().
-		Do()
+		NamespaceParam(namespace).DefaultNamespace()
+	addFilenameSources(builder, enforceNamespace, filenameOptions, cfg.Streams.In)
+	result := builder.Flatten().Do()
 	if err := result.Err(); err != nil {
 		return err
 	}
@@ -65,8 +71,8 @@ func runApplySetLastApplied(_ context.Context, cfg *applySetLastAppliedConfig) e
 			return fmt.Errorf("no last-applied-configuration annotation found on resource: %s, to create the annotation, run the command with --create-annotation", info.Name)
 		}
 		if bytes.Equal(util.StripComments(original), util.StripComments(diff)) {
-			fmt.Fprintf(cfg.Streams.Out, "set-last-applied %s: no changes required.\n", info.Name)
-			return nil
+			_, err := fmt.Fprintf(cfg.Streams.Out, "set-last-applied %s: no changes required.\n", info.Name)
+			return err
 		}
 		pending := lastAppliedPatch{
 			info:      info,
@@ -79,12 +85,6 @@ func runApplySetLastApplied(_ context.Context, cfg *applySetLastAppliedConfig) e
 		return err
 	}
 
-	printFlags := genericclioptions.NewPrintFlags("configured").WithTypeSetter(scheme.Scheme)
-	configurePrintFlags(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
-	printObject, err := printObject(printFlags, strategy, cfg.Streams.Out)
-	if err != nil {
-		return err
-	}
 	for _, pending := range patches {
 		object := pending.info.Object
 		if strategy != util.DryRunClient {

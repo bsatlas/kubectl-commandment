@@ -51,6 +51,14 @@ func TestApplyViewLastAppliedDeclaresSourceAndOutputDomain(t *testing.T) {
 			args:     []string{"apply", "view-last-applied", "deployment/nginx", "-o", "name"},
 			rejected: true,
 		},
+		{
+			name: "assigned short filename",
+			args: []string{"apply", "view-last-applied", "-f=object.yaml"},
+		},
+		{
+			name: "repeated selector keeps last",
+			args: []string{"apply", "view-last-applied", "deployment", "--selector=app=first", "--selector=app=second"},
+		},
 	}
 
 	for _, test := range tests {

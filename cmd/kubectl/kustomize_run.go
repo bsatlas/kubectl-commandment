@@ -42,7 +42,7 @@ func runKustomize(_ context.Context, cfg *kustomizeConfig) error {
 	options.PluginConfig.HelmConfig.ApiVersions = slices.Clone(cfg.HelmAPIVersions)
 	options.PluginConfig.HelmConfig.KubeVersion = cfg.HelmKubeVersion
 	options.PluginConfig.HelmConfig.Debug = cfg.HelmDebug
-	options.AddManagedbyLabel = cfg.EnableManagedbyLabel || cfg.ManagedbyLabelEnv
+	options.AddManagedbyLabel = cfg.EnableManagedByLabel || cfg.ManagedByLabelEnv
 
 	fileSystem := filesys.MakeFsOnDisk()
 	result, err := krusty.MakeKustomizer(options).Run(fileSystem, path)

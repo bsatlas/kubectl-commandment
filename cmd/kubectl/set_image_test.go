@@ -88,6 +88,14 @@ func TestSetImageDeclaresSourceAndWildcardRelationships(t *testing.T) {
 			args:     []string{"set", "image", "-f", "object.yaml", "web=nginx:latest", "--local", "--dry-run=server"},
 			rejected: true,
 		},
+		{
+			name: "assigned short filename",
+			args: []string{"set", "image", "-f=object.yaml", "web=nginx:latest"},
+		},
+		{
+			name: "repeated field manager keeps last",
+			args: []string{"set", "image", "deployment/nginx", "web=nginx:latest", "--field-manager=first", "--field-manager=second"},
+		},
 	}
 
 	for _, test := range tests {

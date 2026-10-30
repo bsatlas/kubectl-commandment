@@ -75,6 +75,14 @@ func TestSetResourcesDeclaresSourceAndResourceListSemantics(t *testing.T) {
 			args:     []string{"set", "resources", "-f", "object.yaml", "--limits=cpu=200m", "--local", "--dry-run=server"},
 			rejected: true,
 		},
+		{
+			name: "assigned short filename",
+			args: []string{"set", "resources", "-f=object.yaml", "--limits=cpu=1"},
+		},
+		{
+			name: "repeated limits keeps last",
+			args: []string{"set", "resources", "deployment/nginx", "--limits=cpu=1", "--limits=cpu=2"},
+		},
 	}
 
 	for _, test := range tests {

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"slices"
 
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -19,36 +18,35 @@ import (
 	"k8s.io/kubectl/pkg/scheme"
 )
 
-func runSetImage(_ context.Context, cfg *setImageConfig) error {
-	resources, images := splitImageArguments(cfg.Arguments)
+func runSetResources(ctx context.Context, cfg *setResourcesConfig) error {
 	strategy := cfg.DryRun
-	factory := cfg.Client.factory()
+	factory := cfg.Client.factoryForInvocation(ctx)
 	namespace, enforceNamespace, err := factory.ToRawKubeConfigLoader().Namespace()
 	if err != nil && !(cfg.Local && clientcmd.IsEmptyConfig(err)) {
 		return err
 	}
 	filename := resource.FilenameOptions{
-		Filenames: slices.Clone(cfg.Filename),
-		Kustomize: cfg.Kustomize,
-		Recursive: cfg.Recursive,
+		Filenames: cfg.Filename.Filenames(),
+		Kustomize: cfg.Filename.Kustomize,
+		Recursive: cfg.Filename.Recursive,
 	}
 	builder := factory.NewBuilder().
 		WithScheme(scheme.Scheme, scheme.Scheme.PrioritizedVersionsAllGroups()...).
 		LocalParam(cfg.Local).
 		ContinueOnError().
-		NamespaceParam(namespace).DefaultNamespace().
-		FilenameParam(enforceNamespace, &filename).
-		Flatten()
+		NamespaceParam(namespace).DefaultNamespace()
+	addFilenameSources(builder, enforceNamespace, filename, cfg.Streams.In)
+	builder.Flatten()
 	if !cfg.Local {
-		builder.LabelSelectorParam(cfg.Selector).ResourceTypeOrNameArgs(cfg.All, resources...).Latest()
+		builder.LabelSelectorParam(cfg.Selector).ResourceTypeOrNameArgs(cfg.All, cfg.Resources...).Latest()
 	}
 	infos, err := builder.Do().Infos()
 	if err != nil {
 		return err
 	}
 
-	printFlags := genericclioptions.NewPrintFlags("image updated").WithTypeSetter(scheme.Scheme)
-	configurePrintFlags(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields)
+	printFlags := genericclioptions.NewPrintFlags("resource requirements updated").WithTypeSetter(scheme.Scheme)
+	configurePrintFlagsWithOutputState(printFlags, cfg.Output, cfg.Template, cfg.AllowMissingTemplateKeys, cfg.ShowManagedFields, cfg.OutputState)
 	printObj, err := printObject(printFlags, strategy, cfg.Streams.Out)
 	if err != nil {
 		return err
@@ -56,7 +54,7 @@ func runSetImage(_ context.Context, cfg *setImageConfig) error {
 	recordFlags := genericclioptions.NewRecordFlags()
 	*recordFlags.Record = cfg.Record
 	if cfg.Record {
-		if err := recordFlags.CompleteWithChangeCause("kubectl set image"); err != nil {
+		if err := recordFlags.CompleteWithChangeCause("kubectl set resources"); err != nil {
 			return err
 		}
 	}
@@ -67,28 +65,46 @@ func runSetImage(_ context.Context, cfg *setImageConfig) error {
 
 	var allErrs []error
 	patches := set.CalculatePatches(infos, scheme.DefaultJSONEncoder(), func(object runtime.Object) ([]byte, error) {
+		transformed := false
 		_, err := polymorphichelpers.UpdatePodSpecForObjectFn(object, func(spec *v1.PodSpec) error {
-			for name, image := range images {
-				initFound := setContainerImage(spec.InitContainers, name, image)
-				containerFound := setContainerImage(spec.Containers, name, image)
-				if !containerFound && !initFound {
-					allErrs = append(allErrs, fmt.Errorf("error: unable to find container named %q", name))
+			containers := append(selectContainers(spec.Containers, cfg.Containers), selectContainers(spec.InitContainers, cfg.Containers)...)
+			if len(containers) == 0 {
+				allErrs = append(allErrs, fmt.Errorf("error: unable to find container named %s", cfg.Containers))
+				return nil
+			}
+			for _, container := range containers {
+				if len(cfg.Limits) > 0 && container.Resources.Limits == nil {
+					container.Resources.Limits = v1.ResourceList{}
 				}
+				for key, value := range cfg.Limits {
+					container.Resources.Limits[key] = value
+				}
+				if len(cfg.Requests) > 0 && container.Resources.Requests == nil {
+					container.Resources.Requests = v1.ResourceList{}
+				}
+				for key, value := range cfg.Requests {
+					container.Resources.Requests[key] = value
+				}
+				transformed = true
 			}
 			return nil
 		})
 		if err != nil {
 			return nil, err
 		}
+		if !transformed {
+			return nil, nil
+		}
 		if err := recorder.Record(object); err != nil {
 			klog.V(4).Infof("error recording current command: %v", err)
 		}
 		return runtime.Encode(scheme.DefaultJSONEncoder(), object)
 	})
+
 	for _, patch := range patches {
 		info := patch.Info
 		if patch.Err != nil {
-			allErrs = append(allErrs, fmt.Errorf("error: %s %v", info.ObjectName(), patch.Err))
+			allErrs = append(allErrs, fmt.Errorf("error: %s %w\n", info.ObjectName(), patch.Err))
 			continue
 		}
 		if len(patch.Patch) == 0 || string(patch.Patch) == "{}" {
@@ -105,7 +121,7 @@ func runSetImage(_ context.Context, cfg *setImageConfig) error {
 			WithFieldManager(cfg.FieldManager).
 			Patch(info.Namespace, info.Name, types.StrategicMergePatchType, patch.Patch, nil)
 		if err != nil {
-			allErrs = append(allErrs, fmt.Errorf("failed to patch image update to pod template: %v", err))
+			allErrs = append(allErrs, fmt.Errorf("failed to patch resources update to pod template %w", err))
 			continue
 		}
 		if err := printObj(actual); err != nil {
@@ -113,15 +129,4 @@ func runSetImage(_ context.Context, cfg *setImageConfig) error {
 		}
 	}
 	return errors.NewAggregate(allErrs)
-}
-
-func setContainerImage(containers []v1.Container, name, image string) bool {
-	found := false
-	for index := range containers {
-		if containers[index].Name == name || name == "*" {
-			containers[index].Image = image
-			found = true
-		}
-	}
-	return found
 }

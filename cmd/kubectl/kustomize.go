@@ -17,8 +17,8 @@ type kustomizeConfig struct {
 	AsCurrentUser        bool
 	EnableAlphaPlugins   bool
 	EnableHelm           bool
-	EnableManagedbyLabel bool
-	ManagedbyLabelEnv    bool
+	EnableManagedByLabel bool
+	ManagedByLabelEnv    bool
 	Env                  []string
 	HelmAPIVersions      []string
 	HelmCommand          string
@@ -33,8 +33,8 @@ type kustomizeConfig struct {
 	ReorderState         cli.OptionalValue[cli.ValueState]
 }
 
-var managedbyLabelEnvironmentLanguage = cli.ValueCodec[bool]{
-	Name: "kustomize-managedby-label-environment",
+var managedByLabelEnvironmentLanguage = cli.ValueCodec[bool]{
+	Name: "kustomize-managed-by-label-environment",
 	Parse: func(value string) (bool, error) {
 		return value == "on", nil
 	},
@@ -109,43 +109,57 @@ var kustomizeCommand = cli.Command[kustomizeConfig]{
 		cb.Arguments.ValueFor(directory, "DIR").Optional()
 
 		asCurrentUserFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.AsCurrentUser))
+		cb.Values.ResolveWith(asCurrentUserFlag, cli.Value.KeepLast())
 		asCurrentUserFlag.Description("use the uid and gid of the command executor to run the function in the container").Long("as-current-user").ImplicitValue(true)
 
 		enableAlphaPluginsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.EnableAlphaPlugins))
+		cb.Values.ResolveWith(enableAlphaPluginsFlag, cli.Value.KeepLast())
 		enableAlphaPluginsFlag.Description("enable kustomize plugins").Long("enable-alpha-plugins").ImplicitValue(true)
 
 		enableHelmFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.EnableHelm))
+		cb.Values.ResolveWith(enableHelmFlag, cli.Value.KeepLast())
 		enableHelmFlag.Description("Enable use of the Helm chart inflator generator.").Long("enable-helm").ImplicitValue(true)
 
-		enableManagedbyLabelFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.EnableManagedbyLabel))
-		enableManagedbyLabelFlag.Description("enable adding app.kubernetes.io/managed-by").Hidden().Release(preexistingDeprecation("The flag `enable-managedby-label` has been deprecated. Use the `managedByLabel` option in the `buildMetadata` field instead."))
-		enableManagedbyLabelFlag.Long("enable-managedby-label").ImplicitValue(true)
+		enableManagedByLabelFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.EnableManagedByLabel))
+		cb.Values.ResolveWith(enableManagedByLabelFlag, cli.Value.KeepLast())
+		enableManagedByLabelFlag.Description("enable adding app.kubernetes.io/managed-by").Hidden().Release(preexistingDeprecation("The flag `enable-managedby-label` has been deprecated. Use the `managedByLabel` option in the `buildMetadata` field instead."))
+		enableManagedByLabelFlag.Long("enable-managedby-label").ImplicitValue(true)
 
-		managedbyLabelEnv := cb.Values.Value(&cb.Config.ManagedbyLabelEnv, managedbyLabelEnvironmentLanguage)
-		cb.Values.Environment(managedbyLabelEnv, konfig.EnableManagedbyLabelEnv)
+		managedByLabelEnv := cb.Values.Value(&cb.Config.ManagedByLabelEnv, managedByLabelEnvironmentLanguage)
+		cb.Values.Environment(managedByLabelEnv, konfig.EnableManagedbyLabelEnv)
 
 		envValue := cb.Values.Sequence(&cb.Config.Env, cli.Value.String())
 		envFlag := cb.Flags.Sequence(envValue)
 		envFlag.Description("a list of environment variables to be used by functions").Long("env")
-		envFlag.Short('e')
+		envFlag.Short('e').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
 		helmAPIVersionsValue := cb.Values.Sequence(&cb.Config.HelmAPIVersions, cli.Value.String())
 		helmAPIVersionsFlag := cb.Flags.Sequence(helmAPIVersionsValue)
 		helmAPIVersionsFlag.Description("Kubernetes api versions used by Helm for Capabilities.APIVersions").Long("helm-api-versions")
 
 		helmCommandFlag := cb.Flags.String(&cb.Config.HelmCommand)
+		cb.Values.ResolveWith(helmCommandFlag, cli.Value.KeepLast())
 		helmCommandFlag.Description("helm command (path to executable)").Long("helm-command")
 		cb.Values.Default(helmCommandFlag, "helm")
 
 		helmDebugFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.HelmDebug))
+		cb.Values.ResolveWith(helmDebugFlag, cli.Value.KeepLast())
 		helmDebugFlag.Description("Enable debug output from the Helm chart inflator generator.").Long("helm-debug").ImplicitValue(true)
 
 		helmKubeVersionFlag := cb.Flags.String(&cb.Config.HelmKubeVersion)
+		cb.Values.ResolveWith(helmKubeVersionFlag, cli.Value.KeepLast())
 		helmKubeVersionFlag.Description("Kubernetes version used by Helm for Capabilities.KubeVersion").Long("helm-kube-version")
 
 		loadRestrictor := cb.Values.Value(&cb.Config.LoadRestrictor, loadRestrictionsLanguage)
 		loadRestrictorFlag := cb.Flags.ValueFor(loadRestrictor)
-		loadRestrictorFlag.Description("if set to 'LoadRestrictionsNone', local kustomizations may load files from outside their root. This does, however, break the relocatability of the kustomization.").Long("load-restrictor")
+		cb.Values.ResolveWith(loadRestrictorFlag, cli.Value.KeepLast())
+		loadRestrictorFlag.Description("if set to 'LoadRestrictionsNone', local kustomizations may load files from outside their root. This does, however, break the relocatability of the kustomization.")
+		loadRestrictorFlag.CompleteBy(literalCompleter[kustomizeConfig](
+			cli.CompletionCandidateValue,
+			types.LoadRestrictionsNone.String(),
+			types.LoadRestrictionsRootOnly.String(),
+		))
+		loadRestrictorFlag.Long("load-restrictor")
 		cb.Values.Default(loadRestrictorFlag, types.LoadRestrictionsRootOnly)
 
 		mountValue := cb.Values.Sequence(&cb.Config.Mount, cli.Value.String())
@@ -153,18 +167,22 @@ var kustomizeCommand = cli.Command[kustomizeConfig]{
 		mountFlag.Description("a list of storage options read from the filesystem").Long("mount")
 
 		networkFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Network))
+		cb.Values.ResolveWith(networkFlag, cli.Value.KeepLast())
 		networkFlag.Description("enable network access for functions that declare it").Long("network").ImplicitValue(true)
 
 		networkNameFlag := cb.Flags.String(&cb.Config.NetworkName)
+		cb.Values.ResolveWith(networkNameFlag, cli.Value.KeepLast())
 		networkNameFlag.Description("the docker network to run the container in").Long("network-name")
 		cb.Values.Default(networkNameFlag, "bridge")
 
 		outputFlag := cb.Flags.String(&cb.Config.Output)
+		cb.Values.ResolveWith(outputFlag, cli.Value.KeepLast())
 		outputFlag.Description("If specified, write output to this path.").Long("output")
-		outputFlag.Short('o')
+		outputFlag.Short('o').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 
 		reorder := cb.Values.Value(&cb.Config.Reorder, reorderLanguage)
 		reorderFlag := cb.Flags.ValueFor(reorder)
+		cb.Values.ResolveWith(reorderFlag, cli.Value.KeepLast())
 		reorderFlag.Description("Reorder the resources just before output. Use 'legacy' to apply a legacy reordering (Namespaces first, Webhooks last, etc). Use 'none' to suppress a final reordering.").Hidden().Release(preexistingDeprecation("use the new 'sortOptions' field in kustomization.yaml instead."))
 		reorderFlag.Long("reorder")
 		cb.Values.Default(reorderFlag, krusty.ReorderOptionLegacy)

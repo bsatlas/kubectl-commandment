@@ -85,9 +85,8 @@ func TestSetEnvDeclaresResourceAndEnvironmentRelationships(t *testing.T) {
 			rejected: true,
 		},
 		{
-			name:     "local forbids resource arguments",
-			args:     []string{"set", "env", "deployment/nginx", "MODE=prod", "--local"},
-			rejected: true,
+			name: "local resource arguments remain admitted",
+			args: []string{"set", "env", "deployment/nginx", "MODE=prod", "--local"},
 		},
 		{
 			name: "local filename source",
@@ -97,6 +96,18 @@ func TestSetEnvDeclaresResourceAndEnvironmentRelationships(t *testing.T) {
 			name:     "local conflicts with server dry run",
 			args:     []string{"set", "env", "-f", "object.yaml", "MODE=prod", "--local", "--dry-run=server"},
 			rejected: true,
+		},
+		{
+			name: "assigned short filename",
+			args: []string{"set", "env", "-f=object.yaml", "MODE=prod"},
+		},
+		{
+			name: "joined short filename",
+			args: []string{"set", "env", "-fobject.yaml", "MODE=prod"},
+		},
+		{
+			name: "repeated from keeps last",
+			args: []string{"set", "env", "deployment/nginx", "--from=configmap/first", "--from=configmap/second"},
 		},
 	}
 
