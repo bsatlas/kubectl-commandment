@@ -3,16 +3,16 @@ package main
 import (
 	"context"
 	"fmt"
+	"slices"
 
-	"k8s.io/api/core/v1"
 	"k8s.io/kubectl/pkg/cmd/attach"
 	"k8s.io/kubectl/pkg/cmd/exec"
 	"k8s.io/kubectl/pkg/polymorphichelpers"
 	"k8s.io/kubectl/pkg/scheme"
 )
 
-func runAttach(_ context.Context, cfg *attachConfig) error {
-	factory := cfg.Client.factory()
+func runAttach(ctx context.Context, cfg *attachConfig) error {
+	factory := cfg.Client.factoryForInvocation(ctx)
 	namespace, _, err := factory.ToRawKubeConfigLoader().Namespace()
 	if err != nil {
 		return err
@@ -22,9 +22,9 @@ func runAttach(_ context.Context, cfg *attachConfig) error {
 		WithScheme(scheme.Scheme, scheme.Scheme.PrioritizedVersionsAllGroups()...).
 		NamespaceParam(namespace).DefaultNamespace()
 	if len(cfg.Arguments) == 1 {
-		builder = builder.ResourceNames("pods", cfg.Arguments[0])
+		builder.ResourceNames("pods", cfg.Arguments[0])
 	} else {
-		builder = builder.ResourceNames(cfg.Arguments[0], cfg.Arguments[1])
+		builder.ResourceNames(cfg.Arguments[0], cfg.Arguments[1])
 	}
 	object, err := builder.Do().Object()
 	if err != nil {
@@ -56,7 +56,7 @@ func runAttach(_ context.Context, cfg *attachConfig) error {
 		CommandName:   "kubectl attach",
 		Pod:           pod,
 		AttachFunc:    attach.DefaultAttachFunc,
-		Resources:     append([]string(nil), cfg.Arguments...),
+		Resources:     slices.Clone(cfg.Arguments),
 		Attach:        &attach.DefaultRemoteAttach{},
 		GetPodTimeout: cfg.PodRunningTimeout,
 		Config:        restConfig,

@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"k8s.io/api/core/v1"
@@ -119,9 +120,9 @@ func runRun(ctx context.Context, cfg *runConfig) error {
 	for _, annotation := range cfg.Annotations {
 		annotations[annotation.Name] = annotation.Value
 	}
-	environment := append([]v1.EnvVar(nil), cfg.Env...)
+	environment := slices.Clone(cfg.Env)
 
-	factory := cfg.Client.factory()
+	factory := cfg.Client.factoryForInvocation(ctx)
 	namespace, enforceNamespace, err := factory.ToRawKubeConfigLoader().Namespace()
 	if err != nil {
 		return err
@@ -156,7 +157,7 @@ func runRun(ctx context.Context, cfg *runConfig) error {
 	*deleteFlags.GracePeriod = cfg.GracePeriod
 	*deleteFlags.Timeout = cfg.Timeout
 	*deleteFlags.Wait = cfg.Wait
-	*deleteFlags.FileNameFlags.Filenames = append([]string(nil), cfg.Filename...)
+	*deleteFlags.FileNameFlags.Filenames = slices.Concat(cfg.Filename...)
 	*deleteFlags.FileNameFlags.Kustomize = cfg.Kustomize
 	*deleteFlags.FileNameFlags.Recursive = cfg.Recursive
 	deleteOptions, err := deleteFlags.ToOptions(dynamicClient, cfg.Streams)
@@ -286,9 +287,9 @@ func createRunPod(cfg *runConfig, labels, annotations map[string]string, environ
 	}
 	if len(cfg.Arguments) > 0 {
 		if cfg.Command {
-			container.Command = append([]string(nil), cfg.Arguments...)
+			container.Command = slices.Clone(cfg.Arguments)
 		} else {
-			container.Args = append([]string(nil), cfg.Arguments...)
+			container.Args = slices.Clone(cfg.Arguments)
 		}
 	}
 	if cfg.Port != nil {
@@ -490,13 +491,13 @@ func waitForRunPod(ctx context.Context, clientset kubernetes.Interface, namespac
 
 	selector := fields.OneTermEqualSelector("metadata.name", name).String()
 	listWatch := cache.ListWatch{
-		ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
+		ListWithContextFunc: func(listCtx context.Context, options metav1.ListOptions) (runtime.Object, error) {
 			options.FieldSelector = selector
-			return clientset.CoreV1().Pods(namespace).List(ctx, options)
+			return clientset.CoreV1().Pods(namespace).List(listCtx, options)
 		},
-		WatchFunc: func(options metav1.ListOptions) (apiwatch.Interface, error) {
+		WatchFuncWithContext: func(watchCtx context.Context, options metav1.ListOptions) (apiwatch.Interface, error) {
 			options.FieldSelector = selector
-			return clientset.CoreV1().Pods(namespace).Watch(ctx, options)
+			return clientset.CoreV1().Pods(namespace).Watch(watchCtx, options)
 		},
 	}
 

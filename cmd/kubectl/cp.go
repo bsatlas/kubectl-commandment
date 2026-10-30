@@ -154,7 +154,7 @@ func cpCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[cpC
 			cb.Values.ResolveWith(containerFlag, cli.Value.KeepLast())
 			containerFlag.Description("Container name. If omitted, use the kubectl.kubernetes.io/default-container annotation for selecting the container to be attached or the first container in the pod will be chosen")
 			containerFlag.Long("container")
-			containerFlag.Short('c')
+			containerFlag.Short('c').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 			noPreserveFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.NoPreserve))
 			cb.Values.ResolveWith(noPreserveFlag, cli.Value.KeepLast())
 			noPreserveFlag.Description("The copied file/directory's ownership and permissions will not be preserved in the container")

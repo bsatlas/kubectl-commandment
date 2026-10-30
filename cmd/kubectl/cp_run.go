@@ -156,7 +156,7 @@ func runCopy(ctx context.Context, cfg *cpConfig) error {
 	source := cfg.Source
 	destination := cfg.Destination
 
-	factory := cfg.Client.factory()
+	factory := cfg.Client.factoryForInvocation(ctx)
 	namespace, _, err := factory.ToRawKubeConfigLoader().Namespace()
 	if err != nil {
 		return err

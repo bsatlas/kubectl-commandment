@@ -22,7 +22,7 @@ type debugConfig struct {
 	CopyTo              string
 	Custom              string
 	Env                 map[string]string
-	Filename            []string
+	Filename            [][]string
 	Image               string
 	ImagePullPolicy     v1.PullPolicy
 	KeepAnnotations     bool
@@ -94,22 +94,19 @@ var debugImagePullPolicyLanguage = cli.ValueCodec[v1.PullPolicy]{
 	Snapshot: func(value v1.PullPolicy) v1.PullPolicy { return value },
 }
 
-func debugProfileLanguage() cli.ValueDomain[string] {
-	language := cli.Value.Domain(
-		cli.Value.Assign[string](),
-		func(values *cli.ValueDomainBuilder[string]) {
-			values.Value(debug.ProfileLegacy, debug.ProfileLegacy).Release(preexistingDeprecation(
-				`--profile=legacy is deprecated and planned to be removed in v1.39; use another profile such as --profile=general`,
-			))
-			values.Value(debug.ProfileGeneral, debug.ProfileGeneral)
-			values.Value(debug.ProfileBaseline, debug.ProfileBaseline)
-			values.Value(debug.ProfileRestricted, debug.ProfileRestricted)
-			values.Value(debug.ProfileNetadmin, debug.ProfileNetadmin)
-			values.Value(debug.ProfileSysadmin, debug.ProfileSysadmin)
-		},
-	)
-	return language
-}
+var debugProfileLanguage = cli.Value.Domain(
+	cli.Value.Assign[string](),
+	func(values *cli.ValueDomainBuilder[string]) {
+		values.Value(debug.ProfileLegacy, debug.ProfileLegacy).Release(preexistingDeprecation(
+			`--profile=legacy is deprecated and planned to be removed in v1.39; use another profile such as --profile=general`,
+		))
+		values.Value(debug.ProfileGeneral, debug.ProfileGeneral)
+		values.Value(debug.ProfileBaseline, debug.ProfileBaseline)
+		values.Value(debug.ProfileRestricted, debug.ProfileRestricted)
+		values.Value(debug.ProfileNetadmin, debug.ProfileNetadmin)
+		values.Value(debug.ProfileSysadmin, debug.ProfileSysadmin)
+	},
+)
 
 func debugCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[debugConfig] {
 	cmd := cli.Command[debugConfig]{
@@ -182,7 +179,7 @@ func debugCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[
 			cb.Values.ResolveWith(containerFlag, cli.Value.KeepLast())
 			containerFlag.Description("Container name to use for debug container.")
 			containerFlag.Long("container")
-			containerFlag.Short('c')
+			containerFlag.Short('c').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 			copyToFlag := cb.Flags.String(&cb.Config.CopyTo)
 			cb.Values.ResolveWith(copyToFlag, cli.Value.KeepLast())
 			copyToFlag.Description("Create a copy of the target Pod with this name.")
@@ -197,12 +194,11 @@ func debugCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[
 			envFlag.DelimitedBy(",")
 			envFlag.Description("Environment variables to set in the container.")
 			envFlag.Long("env")
-			filenameValue := cb.Values.Sequence(&cb.Config.Filename, cli.Value.String())
+			filenameValue := cb.Values.Sequence(&cb.Config.Filename, filenameListLanguage)
 			filenameFlag := cb.Flags.Sequence(filenameValue)
-			filenameFlag.DelimitedBy(",")
 			filenameFlag.Description("identifying the resource to debug")
 			filenameFlag.Long("filename")
-			filenameFlag.Short('f')
+			filenameFlag.Short('f').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 			imageFlag := cb.Flags.Value(&cb.Config.Image, debugOptionalImageLanguage)
 			cb.Values.ResolveWith(imageFlag, cli.Value.KeepLast())
 			imageFlag.Description("Container image to use for debug container.")
@@ -236,7 +232,7 @@ func debugCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[
 			cb.Values.ResolveWith(keepStartupFlag, cli.Value.KeepLast())
 			keepStartupFlag.Description("If true, keep the original startup probes.(This flag only works when used with '--copy-to')")
 			keepStartupFlag.Long("keep-startup").ImplicitValue(true)
-			profileFlag := cb.Flags.Value(&cb.Config.Profile, debugProfileLanguage())
+			profileFlag := cb.Flags.Value(&cb.Config.Profile, debugProfileLanguage)
 			cb.Values.ResolveWith(profileFlag, cli.Value.KeepLast())
 			profileFlag.Description("Options are \"general\", \"baseline\", \"restricted\", \"netadmin\" or \"sysadmin\". Defaults to \"general\"")
 			cb.Values.Default(profileFlag, "general")

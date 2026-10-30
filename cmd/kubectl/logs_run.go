@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/kubectl/pkg/cmd/logs"
 	"k8s.io/kubectl/pkg/polymorphichelpers"
@@ -50,7 +49,7 @@ func runLogs(ctx context.Context, cfg *logsConfig) error {
 	options.ResourceArg = cfg.Resource
 	options.Options = logOptions
 
-	factory := cfg.Client.factory()
+	factory := cfg.Client.factoryForInvocation(ctx)
 	namespace, _, err := factory.ToRawKubeConfigLoader().Namespace()
 	if err != nil {
 		return err
@@ -66,10 +65,10 @@ func runLogs(ctx context.Context, cfg *logsConfig) error {
 		NamespaceParam(namespace).DefaultNamespace().
 		SingleResourceType()
 	if cfg.Resource != "" {
-		builder = builder.ResourceNames("pods", cfg.Resource)
+		builder.ResourceNames("pods", cfg.Resource)
 	}
 	if cfg.Selector != "" {
-		builder = builder.ResourceTypes("pods").LabelSelectorParam(cfg.Selector)
+		builder.ResourceTypes("pods").LabelSelectorParam(cfg.Selector)
 	}
 	infos, err := builder.Do().Infos()
 	if err != nil {

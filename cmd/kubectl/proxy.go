@@ -2,6 +2,7 @@ package main
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -36,7 +37,7 @@ var proxyRegexpSetLanguage = cli.ValueCodec[proxyRegexpSet]{
 	Snapshot: func(value proxyRegexpSet) proxyRegexpSet {
 		snapshot := proxyRegexpSet{
 			Source:      value.Source,
-			Expressions: append([]*regexp.Regexp(nil), value.Expressions...),
+			Expressions: slices.Clone(value.Expressions),
 		}
 		return snapshot
 	},
@@ -163,7 +164,7 @@ func proxyCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[
 			portFlag.Description("The port on which to run the proxy. Set to 0 to pick a random port.")
 			cb.Values.Default(portFlag, 8001)
 			portFlag.Long("port")
-			portFlag.Short('p')
+			portFlag.Short('p').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 			rejectMethodsFlag := cb.Flags.Value(&cb.Config.RejectMethods, proxyRegexpSetLanguage)
 			cb.Values.ResolveWith(rejectMethodsFlag, cli.Value.KeepLast())
 			rejectMethodsFlag.Description("Regular expression for HTTP methods that the proxy should reject (example --reject-methods='POST,PUT,PATCH'). ")
@@ -178,19 +179,19 @@ func proxyCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[
 			cb.Values.ResolveWith(unixSocketFlag, cli.Value.KeepLast())
 			unixSocketFlag.Description("Unix socket on which to run the proxy.")
 			unixSocketFlag.Long("unix-socket")
-			unixSocketFlag.Short('u')
+			unixSocketFlag.Short('u').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 			cb.Rule.When(cb.When.NotEqual(unixSocketFlag.Destination(), "")).Equal(portFlag.Destination(), 8001)
 			wwwFlag := cb.Flags.String(&cb.Config.Www)
 			cb.Values.ResolveWith(wwwFlag, cli.Value.KeepLast())
 			wwwFlag.Description("Also serve static files from the given directory under the specified prefix.")
 			wwwFlag.Long("www")
-			wwwFlag.Short('w')
+			wwwFlag.Short('w').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 			wwwPrefixFlag := cb.Flags.Value(&cb.Config.WwwPrefix, proxyPathPrefixLanguage)
 			cb.Values.ResolveWith(wwwPrefixFlag, cli.Value.KeepLast())
 			wwwPrefixFlag.Description("Prefix to serve static files under, if static file directory is specified.")
 			cb.Values.Default(wwwPrefixFlag, "/static/")
 			wwwPrefixFlag.Long("www-prefix")
-			wwwPrefixFlag.Short('P')
+			wwwPrefixFlag.Short('P').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 		},
 		Run: runProxy,
 	}

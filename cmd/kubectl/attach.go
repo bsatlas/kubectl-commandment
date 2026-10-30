@@ -61,7 +61,7 @@ func attachCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command
 			cb.Values.ResolveWith(containerFlag, cli.Value.KeepLast())
 			containerFlag.Description("Container name. If omitted, use the kubectl.kubernetes.io/default-container annotation for selecting the container to be attached or the first container in the pod will be chosen")
 			containerFlag.Long("container")
-			containerFlag.Short('c')
+			containerFlag.Short('c').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 			detachKeysFlag := cb.Flags.String(&cb.Config.DetachKeys)
 			cb.Values.ResolveWith(detachKeysFlag, cli.Value.KeepLast())
 			detachKeysFlag.Description("Override the key sequence for detaching a container")

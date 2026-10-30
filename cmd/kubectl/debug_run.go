@@ -21,7 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
+	"slices"
 	"time"
 
 	"k8s.io/api/core/v1"
@@ -95,7 +95,7 @@ type debugOperation struct {
 var debugNameSuffix = rand.String
 
 func runDebug(ctx context.Context, cfg *debugConfig) error {
-	factory := cfg.Client.factory()
+	factory := cfg.Client.factoryForInvocation(ctx)
 	namespace, explicitNamespace, err := factory.ToRawKubeConfigLoader().Namespace()
 	if err != nil {
 		return err
@@ -115,7 +115,7 @@ func runDebug(ctx context.Context, cfg *debugConfig) error {
 	for name := range cfg.Env {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	for _, name := range names {
 		env = append(env, v1.EnvVar{
 			Name:  name,
@@ -137,7 +137,7 @@ func runDebug(ctx context.Context, cfg *debugConfig) error {
 	}
 
 	operation := debugOperation{
-		Args:                  append([]string(nil), cfg.Arguments...),
+		Args:                  slices.Clone(cfg.Arguments),
 		ArgsOnly:              cfg.ArgumentsOnly,
 		Attach:                cfg.Attach,
 		Container:             cfg.Container,
@@ -154,7 +154,7 @@ func runDebug(ctx context.Context, cfg *debugConfig) error {
 		KeepInitContainers:    cfg.KeepInitContainers,
 		Namespace:             namespace,
 		ExplicitNamespace:     explicitNamespace,
-		TargetNames:           append([]string(nil), cfg.TargetNames...),
+		TargetNames:           slices.Clone(cfg.TargetNames),
 		PullPolicy:            cfg.ImagePullPolicy,
 		Quiet:                 cfg.Quiet,
 		SameNode:              cfg.SameNode,
@@ -176,7 +176,7 @@ func runDebug(ctx context.Context, cfg *debugConfig) error {
 			},
 		),
 		Filename: resource.FilenameOptions{
-			Filenames: append([]string(nil), cfg.Filename...),
+			Filenames: slices.Concat(cfg.Filename...),
 		},
 		RestClientGetter: factory,
 	}
@@ -207,9 +207,10 @@ func runDebug(ctx context.Context, cfg *debugConfig) error {
 }
 
 func (o *debugOperation) run(ctx context.Context) error {
-	result := o.Builder.
-		WithScheme(scheme.Scheme, scheme.Scheme.PrioritizedVersionsAllGroups()...).
-		FilenameParam(o.ExplicitNamespace, &o.Filename).
+	builder := o.Builder.
+		WithScheme(scheme.Scheme, scheme.Scheme.PrioritizedVersionsAllGroups()...)
+	addFilenameSources(builder, o.ExplicitNamespace, o.Filename, o.Streams.In)
+	result := builder.
 		NamespaceParam(o.Namespace).DefaultNamespace().ResourceNames("pods", o.TargetNames...).
 		Do()
 	if err := result.Err(); err != nil {
@@ -686,13 +687,13 @@ func (o *debugOperation) waitForContainer(ctx context.Context, ns, podName, cont
 
 	fieldSelector := fields.OneTermEqualSelector("metadata.name", podName).String()
 	listWatch := cache.ListWatch{
-		ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
+		ListWithContextFunc: func(listCtx context.Context, options metav1.ListOptions) (runtime.Object, error) {
 			options.FieldSelector = fieldSelector
-			return o.Client.CoreV1().Pods(ns).List(ctx, options)
+			return o.Client.CoreV1().Pods(ns).List(listCtx, options)
 		},
-		WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
+		WatchFuncWithContext: func(watchCtx context.Context, options metav1.ListOptions) (watch.Interface, error) {
 			options.FieldSelector = fieldSelector
-			return o.Client.CoreV1().Pods(ns).Watch(ctx, options)
+			return o.Client.CoreV1().Pods(ns).Watch(watchCtx, options)
 		},
 	}
 

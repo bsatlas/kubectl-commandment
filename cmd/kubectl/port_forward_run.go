@@ -3,9 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 
-	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/kubectl/pkg/cmd/portforward"
 	"k8s.io/kubectl/pkg/polymorphichelpers"
@@ -14,7 +14,7 @@ import (
 )
 
 func runPortForward(ctx context.Context, cfg *portForwardConfig) error {
-	factory := cfg.Client.factory()
+	factory := cfg.Client.factoryForInvocation(ctx)
 	namespace, _, err := factory.ToRawKubeConfigLoader().Namespace()
 	if err != nil {
 		return err
@@ -75,7 +75,7 @@ func runPortForward(ctx context.Context, cfg *portForwardConfig) error {
 	options.PodClient = clientset.CoreV1()
 	options.Config = restConfig
 	options.RESTClient = restClient
-	options.Address = append([]string(nil), cfg.Address...)
+	options.Address = slices.Clone(cfg.Address)
 	options.Ports = forwardPorts
 	options.StopChannel = make(chan struct{}, 1)
 	options.ReadyChannel = make(chan struct{})

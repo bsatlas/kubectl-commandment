@@ -11,8 +11,8 @@ import (
 	"k8s.io/kubectl/pkg/proxy"
 )
 
-func runProxy(_ context.Context, cfg *proxyConfig) error {
-	clientConfig, err := cfg.Client.factory().ToRESTConfig()
+func runProxy(ctx context.Context, cfg *proxyConfig) error {
+	clientConfig, err := cfg.Client.factoryForInvocation(ctx).ToRESTConfig()
 	if err != nil {
 		return err
 	}
@@ -67,6 +67,17 @@ func runProxy(_ context.Context, cfg *proxyConfig) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(cfg.Streams.Out, "Starting to serve on %s\n", listener.Addr().String())
-	return server.ServeOnListener(listener)
+	defer listener.Close()
+	stop := context.AfterFunc(ctx, func() { _ = listener.Close() })
+	defer stop()
+	if _, err := fmt.Fprintf(cfg.Streams.Out, "Starting to serve on %s\n", listener.Addr().String()); err != nil {
+		return err
+	}
+	if err := server.ServeOnListener(listener); err != nil {
+		if cause := context.Cause(ctx); cause != nil {
+			return cause
+		}
+		return err
+	}
+	return nil
 }

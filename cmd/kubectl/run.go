@@ -73,12 +73,11 @@ type runConfig struct {
 	Cascade                  runCascade
 	Command                  bool
 	DetachKeys               string
-	DryRun                   string
 	DryRunStrategy           util.DryRunStrategy
 	Env                      []v1.EnvVar
 	Expose                   bool
 	FieldManager             string
-	Filename                 []string
+	Filename                 [][]string
 	Force                    bool
 	GracePeriod              int
 	Image                    string
@@ -321,16 +320,19 @@ func runCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[ru
 			cb.Access.Stdin(&cb.Config.Streams.In)
 			cb.Access.Stdout(&cb.Config.Streams.Out)
 			cb.Access.Stderr(&cb.Config.Streams.ErrOut)
+			declarePrintFlags(
+				cb,
+				&cb.Config.Output,
+				&cb.Config.OutputState,
+				&cb.Config.Template,
+				&cb.Config.AllowMissingTemplateKeys,
+				&cb.Config.ShowManagedFields,
+			)
 			arguments := cb.Values.Sequence(&cb.Config.Arguments, cli.Value.String())
 			cb.Arguments.Form(func(form *cli.ArgumentFormBuilder[runConfig]) {
 				form.String(&form.Config.Name, "NAME")
 				form.PassThrough(arguments, "ARG", cli.Count.ZeroOrMore())
 			})
-			allowMissingTemplateKeysFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.AllowMissingTemplateKeys))
-			cb.Values.ResolveWith(allowMissingTemplateKeysFlag, cli.Value.KeepLast())
-			allowMissingTemplateKeysFlag.Description("If true, ignore any errors in templates when a field or map key is missing in the template. Only applies to golang and jsonpath output formats.")
-			cb.Values.Default(allowMissingTemplateKeysFlag, true)
-			allowMissingTemplateKeysFlag.Long("allow-missing-template-keys").ImplicitValue(true)
 			annotationsValue := cb.Values.Sequence(&cb.Config.Annotations, runAnnotationLanguage)
 			annotationsFlag := cb.Flags.Sequence(annotationsValue)
 			annotationsFlag.Description("Annotations to apply to the pod.")
@@ -353,17 +355,11 @@ func runCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[ru
 			detachKeysFlag.Description("Override the key sequence for detaching a container.")
 			cb.Values.Default(detachKeysFlag, "ctrl-p,ctrl-q")
 			detachKeysFlag.Long("detach-keys")
-			dryRunFlag := cb.Flags.String(&cb.Config.DryRun)
+			dryRunFlag := cb.Flags.Value(&cb.Config.DryRunStrategy, dryRunValueLanguage)
 			cb.Values.ResolveWith(dryRunFlag, cli.Value.KeepLast())
 			dryRunFlag.Description("Must be \"none\", \"server\", or \"client\". If client strategy, only print the object that would be sent, without sending it. If server strategy, submit server-side request without persisting the resource.")
-			cb.Values.Default(dryRunFlag, "none")
-			dryRunFlag.Long("dry-run").ImplicitValue("unchanged")
-			dryRunStrategy := cb.Values.Derive(
-				&cb.Config.DryRunStrategy,
-				cli.Value.ComputedBy(func(_ context.Context, cfg *runConfig, _ cli.Dependencies) (util.DryRunStrategy, error) {
-					return dryRunStrategy(cfg.DryRun)
-				}).From(dryRunFlag),
-			)
+			cb.Values.Default(dryRunFlag, util.DryRunNone)
+			dryRunFlag.Long("dry-run").ImplicitValue(util.DryRunClient)
 			envValue := cb.Values.Sequence(&cb.Config.Env, runEnvironmentLanguage)
 			envFlag := cb.Flags.Sequence(envValue)
 			envFlag.Description("Environment variables to set in the container.")
@@ -377,13 +373,12 @@ func runCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[ru
 			fieldManagerFlag.Description("Name of the manager used to track field ownership.")
 			cb.Values.Default(fieldManagerFlag, "kubectl-run")
 			fieldManagerFlag.Long("field-manager")
-			filenameValue := cb.Values.Sequence(&cb.Config.Filename, cli.Value.String())
+			filenameValue := cb.Values.Sequence(&cb.Config.Filename, filenameListLanguage)
 			filenameFlag := cb.Flags.Sequence(filenameValue)
-			filenameFlag.DelimitedBy(",")
 			filenameFlag.Description("to use to replace the resource.")
 			filenameFlag.Hidden().Release(preexistingDeprecation("it is ignored by kubectl run and will be removed in a future release"))
 			filenameFlag.Long("filename")
-			filenameFlag.Short('f')
+			filenameFlag.Short('f').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 			forceFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Force))
 			cb.Values.ResolveWith(forceFlag, cli.Value.KeepLast())
 			forceFlag.Description("If true, immediately remove resources from API and bypass graceful deletion. Note that immediate deletion of some resources may result in inconsistency or data loss and requires confirmation.")
@@ -405,23 +400,16 @@ func runCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[ru
 			cb.Values.ResolveWith(kustomizeFlag, cli.Value.KeepLast())
 			kustomizeFlag.Description("Process a kustomization directory. This flag can't be used together with -f or -R.")
 			kustomizeFlag.Long("kustomize")
-			kustomizeFlag.Short('k')
+			kustomizeFlag.Short('k').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 			labelsFlag := cb.Flags.Value(&cb.Config.Labels, runLabelsLanguage)
 			cb.Values.ResolveWith(labelsFlag, cli.Value.KeepLast())
 			labelsFlag.Description("Comma separated labels to apply to the pod. Will override previous values.")
 			labelsFlag.Long("labels")
-			labelsFlag.Short('l')
+			labelsFlag.Short('l').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 			leaveStdinOpenFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.LeaveStdinOpen))
 			cb.Values.ResolveWith(leaveStdinOpenFlag, cli.Value.KeepLast())
 			leaveStdinOpenFlag.Description("If the pod is started in interactive mode or with stdin, leave stdin open after the first attach completes. By default, stdin will be closed after the first attach completes.")
 			leaveStdinOpenFlag.Long("leave-stdin-open").ImplicitValue(true)
-			output := cb.Values.Value(&cb.Config.Output, printOutputLanguage)
-			outputFlag := cb.Flags.ValueFor(output)
-			cb.Values.ResolveWith(outputFlag, cli.Value.KeepLast())
-			outputFlag.Description("Output format. One of: (json, yaml, kyaml, name, go-template, go-template-file, template, templatefile, jsonpath, jsonpath-as-json, jsonpath-file).")
-			outputFlag.Long("output")
-			outputFlag.Short('o')
-			cb.Access.ValueState(outputFlag, &cb.Config.OutputState)
 			overrideTypeFlag := cb.Flags.String(&cb.Config.OverrideTypeInput)
 			cb.Values.ResolveWith(overrideTypeFlag, cli.Value.KeepLast())
 			overrideTypeFlag.Description("The method used to override the generated object: json, merge, or strategic.")
@@ -481,19 +469,11 @@ func runCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[ru
 			cb.Values.ResolveWith(saveConfigFlag, cli.Value.KeepLast())
 			saveConfigFlag.Description("If true, the configuration of current object will be saved in its annotation. Otherwise, the annotation will be unchanged. This flag is useful when you want to perform kubectl apply on this object in the future.")
 			saveConfigFlag.Long("save-config").ImplicitValue(true)
-			showManagedFieldsFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.ShowManagedFields))
-			cb.Values.ResolveWith(showManagedFieldsFlag, cli.Value.KeepLast())
-			showManagedFieldsFlag.Description("If true, keep the managedFields when printing objects in JSON or YAML format.")
-			showManagedFieldsFlag.Long("show-managed-fields").ImplicitValue(true)
 			stdinFlag := cb.Flags.ValueFor(cb.Values.Bool(&cb.Config.Stdin))
 			cb.Values.ResolveWith(stdinFlag, cli.Value.KeepLast())
 			stdinFlag.Description("Keep stdin open on the container in the pod, even if nothing is attached.")
 			stdinFlag.Long("stdin").ImplicitValue(true)
 			stdinFlag.Short('i').ValueForms(cli.FlagValueFormAssigned).ImplicitValue(true)
-			templateFlag := cb.Flags.String(&cb.Config.Template)
-			cb.Values.ResolveWith(templateFlag, cli.Value.KeepLast())
-			templateFlag.Description("Template string or path to template file to use when -o=go-template, -o=go-template-file. The template format is golang templates [http://golang.org/pkg/text/template/#pkg-overview].")
-			templateFlag.Long("template")
 			timeoutFlag := cb.Flags.Value(&cb.Config.Timeout, durationLanguage())
 			cb.Values.ResolveWith(timeoutFlag, cli.Value.KeepLast())
 			timeoutFlag.Description("The length of time to wait before giving up on a delete, zero means determine a timeout from the size of the object")
@@ -532,18 +512,13 @@ func runCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[ru
 				string(util.OverrideTypeMerge),
 				string(util.OverrideTypeStrategic),
 			)
-			cb.Rule.Check("kubectl-run-output-template", func(_ context.Context, cfg *runConfig, _ cli.Dependencies) (bool, error) {
-				return validPrintOutputTemplate(cfg.Output, cfg.Template), nil
-			}).
-				DependsOn(output.OptionalDependency()).
-				DependsOn(templateFlag.Destination().OptionalDependency())
 			cb.Rule.Require(imageFlag.Destination())
 			cb.Rule.When(cb.When.Equal(ttyFlag.Destination(), true)).Check("kubectl-run-tty-stdin", func(_ context.Context, cfg *runConfig, _ cli.Dependencies) (bool, error) {
 				return cfg.Stdin, nil
 			}).DependsOn(stdinFlag.OptionalDependency())
 			cb.Rule.When(cb.When.Equal(exposeFlag.Destination(), true)).Require(portFlag.Destination())
 			cb.Rule.When(cb.When.Equal(rmFlag.Destination(), true)).Equal(attachFlag.Destination(), true)
-			cb.Rule.When(cb.When.Equal(attachFlag.Destination(), true)).Equal(dryRunStrategy, util.DryRunNone)
+			cb.Rule.When(cb.When.Equal(attachFlag.Destination(), true)).Equal(dryRunFlag.Destination(), util.DryRunNone)
 			cb.Rule.GreaterThan(podRunningTimeoutFlag.Destination(), time.Duration(0))
 		},
 		Run: runRun,

@@ -13,7 +13,7 @@ type execConfig struct {
 	Resource          string
 	Command           []string
 	Container         string
-	Filename          []string
+	Filename          [][]string
 	PodRunningTimeout time.Duration
 	Quiet             bool
 	Stdin             bool
@@ -82,13 +82,12 @@ func execCommand(client cli.Destination[rootConfig, clientConfig]) cli.Command[e
 				func(cfg *execConfig) string { return cfg.Resource },
 			)).From(client)
 			containerFlag.Long("container")
-			containerFlag.Short('c')
-			filenameValue := cb.Values.Sequence(&cb.Config.Filename, cli.Value.String())
+			containerFlag.Short('c').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
+			filenameValue := cb.Values.Sequence(&cb.Config.Filename, filenameListLanguage)
 			filenameFlag := cb.Flags.Sequence(filenameValue)
-			filenameFlag.DelimitedBy(",")
 			filenameFlag.Description("to use to exec into the resource")
 			filenameFlag.Long("filename")
-			filenameFlag.Short('f')
+			filenameFlag.Short('f').ValueForms(cli.FlagValueFormSeparate, cli.FlagValueFormJoined, cli.FlagValueFormAssigned)
 			podRunningTimeoutFlag := cb.Flags.Value(&cb.Config.PodRunningTimeout, durationLanguage())
 			cb.Values.ResolveWith(podRunningTimeoutFlag, cli.Value.KeepLast())
 			podRunningTimeoutFlag.Description("The length of time (like 5s, 2m, or 3h, higher than zero) to wait until at least one pod is running")

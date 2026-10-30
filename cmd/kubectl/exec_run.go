@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/cli-runtime/pkg/resource"
@@ -11,22 +12,22 @@ import (
 	"k8s.io/kubectl/pkg/scheme"
 )
 
-func runExec(_ context.Context, cfg *execConfig) error {
-	factory := cfg.Client.factory()
+func runExec(ctx context.Context, cfg *execConfig) error {
+	factory := cfg.Client.factoryForInvocation(ctx)
 	namespace, enforceNamespace, err := factory.ToRawKubeConfigLoader().Namespace()
 	if err != nil {
 		return err
 	}
 
 	filenames := resource.FilenameOptions{
-		Filenames: cfg.Filename,
+		Filenames: slices.Concat(cfg.Filename...),
 	}
 	builder := factory.NewBuilder().
-		WithScheme(scheme.Scheme, scheme.Scheme.PrioritizedVersionsAllGroups()...).
-		FilenameParam(enforceNamespace, &filenames).
-		NamespaceParam(namespace).DefaultNamespace()
+		WithScheme(scheme.Scheme, scheme.Scheme.PrioritizedVersionsAllGroups()...)
+	addFilenameSources(builder, enforceNamespace, filenames, cfg.Streams.In)
+	builder.NamespaceParam(namespace).DefaultNamespace()
 	if cfg.Resource != "" {
-		builder = builder.ResourceNames("pods", cfg.Resource)
+		builder.ResourceNames("pods", cfg.Resource)
 	}
 	object, err := builder.Do().Object()
 	if err != nil {
@@ -59,7 +60,7 @@ func runExec(_ context.Context, cfg *execConfig) error {
 			Quiet:         cfg.Quiet,
 			IOStreams:     cfg.Streams,
 		},
-		Command:       append([]string(nil), cfg.Command...),
+		Command:       slices.Clone(cfg.Command),
 		Executor:      &exec.DefaultRemoteExecutor{},
 		PodClient:     clientset.CoreV1(),
 		GetPodTimeout: cfg.PodRunningTimeout,
